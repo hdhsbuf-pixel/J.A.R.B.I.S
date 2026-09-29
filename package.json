@@ -1,0 +1,16 @@
+{
+  "name": "jarbis-bot",
+  "version": "1.0.0",
+  "description": "J.A.R.B.I.S Telegram subscription bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
