@@ -6,6 +6,16 @@ const fs = require("fs");
 // ============================================================
 // J.A.R.B.I.S — TELEGRAM SUBSCRIPTION BOT
 // ============================================================
+// Регистрация удалена.
+// SMTP не используется.
+// Вход = проверка активной подписки.
+// После подтверждения оплаты пользователь получает сообщение
+// с информацией о покупке и уведомлением о связи.
+// ============================================================
+
+// ============================================================
+// НАСТРОЙКИ
+// ============================================================
 
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 
@@ -76,6 +86,7 @@ function addColumn(table, column, definition) {
 }
 
 function initDb() {
+
     db.exec(`
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -105,16 +116,50 @@ function initDb() {
         );
     `);
 
-    addColumn("users", "username", "TEXT");
-    addColumn("users", "name", "TEXT");
-    addColumn("users", "email", "TEXT");
-    addColumn("users", "sub_until", "TEXT");
-    addColumn("users", "total_paid", "INTEGER DEFAULT 0");
+    addColumn(
+        "users",
+        "username",
+        "TEXT"
+    );
 
-    addColumn("payments", "name", "TEXT");
-    addColumn("payments", "email", "TEXT");
+    addColumn(
+        "users",
+        "name",
+        "TEXT"
+    );
+
+    addColumn(
+        "users",
+        "email",
+        "TEXT"
+    );
+
+    addColumn(
+        "users",
+        "sub_until",
+        "TEXT"
+    );
+
+    addColumn(
+        "users",
+        "total_paid",
+        "INTEGER DEFAULT 0"
+    );
+
+    addColumn(
+        "payments",
+        "name",
+        "TEXT"
+    );
+
+    addColumn(
+        "payments",
+        "email",
+        "TEXT"
+    );
 
     for (const adminId of ADMIN_IDS) {
+
         db.prepare(`
             INSERT OR IGNORE INTO admins
             (
@@ -127,6 +172,10 @@ function initDb() {
     }
 }
 
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ БАЗЫ
+// ============================================================
+
 initDb();
 
 // ============================================================
@@ -134,6 +183,7 @@ initDb();
 // ============================================================
 
 function upsertUser(userId, username = null) {
+
     db.prepare(`
         INSERT OR IGNORE INTO users
         (
@@ -141,18 +191,26 @@ function upsertUser(userId, username = null) {
             username
         )
         VALUES (?, ?)
-    `).run(userId, username);
+    `).run(
+        userId,
+        username
+    );
 
     if (username) {
+
         db.prepare(`
             UPDATE users
             SET username = ?
             WHERE user_id = ?
-        `).run(username, userId);
+        `).run(
+            username,
+            userId
+        );
     }
 }
 
 function getUser(userId) {
+
     return db.prepare(`
         SELECT *
         FROM users
@@ -165,6 +223,7 @@ function getUser(userId) {
 // ============================================================
 
 const TARIFFS = {
+
     "80": {
         name: "3 дня",
         days: 3,
@@ -200,6 +259,7 @@ const TARIFFS = {
         days: 36500,
         price: 5000
     }
+
 };
 
 // ============================================================
@@ -207,21 +267,23 @@ const TARIFFS = {
 // ============================================================
 
 function isAdmin(userId) {
+
     return ADMIN_IDS.includes(
         Number(userId)
     );
 }
 
 function getAdminStatus(userId) {
-    const row = db
-        .prepare(`
+
+    const row =
+        db.prepare(`
             SELECT *
             FROM admins
             WHERE user_id = ?
-        `)
-        .get(userId);
+        `).get(userId);
 
     if (!row) {
+
         return {
             online: false
         };
@@ -231,10 +293,16 @@ function getAdminStatus(userId) {
         row.online === 0 &&
         row.offline_until
     ) {
-        const until =
-            new Date(row.offline_until);
 
-        if (until <= new Date()) {
+        const until =
+            new Date(
+                row.offline_until
+            );
+
+        if (
+            until <= new Date()
+        ) {
+
             db.prepare(`
                 UPDATE admins
                 SET
@@ -250,12 +318,17 @@ function getAdminStatus(userId) {
     }
 
     return {
-        online: row.online === 1,
-        offlineUntil: row.offline_until
+
+        online:
+            row.online === 1,
+
+        offlineUntil:
+            row.offline_until
     };
 }
 
 function setAdminOnline(userId) {
+
     db.prepare(`
         UPDATE admins
         SET
@@ -266,6 +339,7 @@ function setAdminOnline(userId) {
 }
 
 function setAdminOffline(userId, until) {
+
     db.prepare(`
         UPDATE admins
         SET
@@ -279,6 +353,7 @@ function setAdminOffline(userId, until) {
 }
 
 function getOnlineAdminsCount() {
+
     return ADMIN_IDS.filter(
         id =>
             getAdminStatus(id).online
@@ -286,9 +361,11 @@ function getOnlineAdminsCount() {
 }
 
 function getStatusText() {
+
     if (
         getOnlineAdminsCount() > 0
     ) {
+
         return "🟢 Администратор в онлайне";
     }
 
@@ -304,6 +381,7 @@ function getStatusText() {
 // ============================================================
 
 function parseOfflineTime(text) {
+
     const value =
         text.toLowerCase().trim();
 
@@ -311,12 +389,15 @@ function parseOfflineTime(text) {
         /(\d+)\s*(d|h|m|s)/g;
 
     let match;
+
     let totalSeconds = 0;
+
     let found = false;
 
     while (
         (match = regex.exec(value))
     ) {
+
         found = true;
 
         const number =
@@ -359,6 +440,7 @@ function parseOfflineTime(text) {
         cleaned !== "" ||
         totalSeconds < 1
     ) {
+
         return null;
     }
 
@@ -366,6 +448,7 @@ function parseOfflineTime(text) {
         totalSeconds >
         15 * 86400
     ) {
+
         return "MAX";
     }
 
@@ -373,6 +456,7 @@ function parseOfflineTime(text) {
 }
 
 function formatDuration(seconds) {
+
     const result = [];
 
     const days =
@@ -420,6 +504,7 @@ function formatDuration(seconds) {
 // ============================================================
 
 function isSubActive(userId) {
+
     const user =
         getUser(userId);
 
@@ -427,6 +512,7 @@ function isSubActive(userId) {
         !user ||
         !user.sub_until
     ) {
+
         return false;
     }
 
@@ -438,6 +524,7 @@ function isSubActive(userId) {
 }
 
 function setSubscription(userId, days) {
+
     const user =
         getUser(userId);
 
@@ -451,6 +538,7 @@ function setSubscription(userId, days) {
         user &&
         user.sub_until
     ) {
+
         const current =
             new Date(
                 user.sub_until
@@ -459,6 +547,7 @@ function setSubscription(userId, days) {
         if (
             current > now
         ) {
+
             start =
                 current;
         }
@@ -492,6 +581,7 @@ function createOrder(
     name,
     email
 ) {
+
     const tariff =
         TARIFFS[tariffKey];
 
@@ -521,13 +611,21 @@ function createOrder(
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
+
         orderId,
+
         userId,
+
         tariffKey,
+
         tariff.price,
+
         "pending",
+
         new Date().toISOString(),
+
         name,
+
         email
     );
 
@@ -547,6 +645,7 @@ function createOrder(
 }
 
 function getOrder(orderId) {
+
     return db.prepare(`
         SELECT *
         FROM payments
@@ -555,6 +654,7 @@ function getOrder(orderId) {
 }
 
 function getPendingOrder(userId) {
+
     return db.prepare(`
         SELECT *
         FROM payments
@@ -571,10 +671,12 @@ function getPendingOrder(userId) {
 // ============================================================
 
 function confirmOrder(orderId) {
+
     const order =
         getOrder(orderId);
 
     if (!order) {
+
         return {
             success: false,
             reason: "not_found"
@@ -584,6 +686,7 @@ function confirmOrder(orderId) {
     if (
         order.status !== "pending"
     ) {
+
         return {
             success: false,
             reason: "already_processed"
@@ -594,6 +697,7 @@ function confirmOrder(orderId) {
         TARIFFS[order.tariff];
 
     if (!tariff) {
+
         return {
             success: false,
             reason: "tariff_not_found"
@@ -630,9 +734,14 @@ function confirmOrder(orderId) {
     );
 
     return {
+
         success: true,
-        userId: order.user_id,
+
+        userId:
+            order.user_id,
+
         until,
+
         order
     };
 }
@@ -642,10 +751,12 @@ function confirmOrder(orderId) {
 // ============================================================
 
 function rejectOrder(orderId) {
+
     const order =
         getOrder(orderId);
 
     if (!order) {
+
         return {
             success: false,
             reason: "not_found"
@@ -655,6 +766,7 @@ function rejectOrder(orderId) {
     if (
         order.status !== "pending"
     ) {
+
         return {
             success: false,
             reason: "already_processed"
@@ -670,8 +782,12 @@ function rejectOrder(orderId) {
     `).run(orderId);
 
     return {
+
         success: true,
-        userId: order.user_id,
+
+        userId:
+            order.user_id,
+
         order
     };
 }
@@ -681,6 +797,7 @@ function rejectOrder(orderId) {
 // ============================================================
 
 function validEmail(email) {
+
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         .test(email);
 }
@@ -690,9 +807,13 @@ function validEmail(email) {
 // ============================================================
 
 function mainMenu() {
+
     return {
+
         reply_markup: {
+
             keyboard: [
+
                 [
                     {
                         text: "🔐 Войти"
@@ -716,9 +837,11 @@ function mainMenu() {
                         text: "🛠 Тех.поддержка"
                     }
                 ]
+
             ],
 
             resize_keyboard: true,
+
             is_persistent: true
         }
     };
@@ -729,9 +852,13 @@ function mainMenu() {
 // ============================================================
 
 function buyMenu() {
+
     return {
+
         reply_markup: {
+
             inline_keyboard: [
+
                 [
                     {
                         text: "80 ₽ — 3 дня",
@@ -780,6 +907,7 @@ function buyMenu() {
                         callback_data: "back"
                     }
                 ]
+
             ]
         }
     };
@@ -790,9 +918,13 @@ function buyMenu() {
 // ============================================================
 
 function adminMenu() {
+
     return {
+
         reply_markup: {
+
             inline_keyboard: [
+
                 [
                     {
                         text: "🟢 Я онлайн",
@@ -813,6 +945,7 @@ function adminMenu() {
                         callback_data: "back"
                     }
                 ]
+
             ]
         }
     };
@@ -823,9 +956,13 @@ function adminMenu() {
 // ============================================================
 
 function adminOrderButtons(orderId) {
+
     return {
+
         reply_markup: {
+
             inline_keyboard: [
+
                 [
                     {
                         text: "✅ Подтвердить",
@@ -839,6 +976,7 @@ function adminOrderButtons(orderId) {
                             `reject_${orderId}`
                     }
                 ]
+
             ]
         }
     };
@@ -861,7 +999,9 @@ const adminWaitingTime =
 bot.onText(
     /^\/start$/,
     async msg => {
+
         try {
+
             const userId =
                 msg.from.id;
 
@@ -871,6 +1011,7 @@ bot.onText(
             );
 
             const welcomeText =
+
                 "📋 Главное меню\n\n" +
 
                 "👋 Добро пожаловать в J.A.R.B.I.S!\n\n" +
@@ -892,7 +1033,9 @@ bot.onText(
             if (
                 isAdmin(userId)
             ) {
+
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "👨‍💼 Панель администратора\n\n" +
@@ -905,6 +1048,7 @@ bot.onText(
             }
 
         } catch (error) {
+
             console.error(
                 "START ERROR:",
                 error
@@ -920,9 +1064,13 @@ bot.onText(
 bot.onText(
     /^\/id$/,
     async msg => {
+
         await bot.sendMessage(
+
             msg.chat.id,
+
             `🆔 Ваш Telegram ID:\n\n${msg.from.id}`,
+
             mainMenu()
         );
     }
@@ -935,15 +1083,18 @@ bot.onText(
 bot.onText(
     /^\/admin$/,
     async msg => {
+
         if (
             !isAdmin(
                 msg.from.id
             )
         ) {
+
             return;
         }
 
         await bot.sendMessage(
+
             msg.chat.id,
 
             "👨‍💼 Панель администратора\n\n" +
@@ -963,7 +1114,9 @@ bot.onText(
 bot.on(
     "message",
     async msg => {
+
         try {
+
             if (!msg.text) {
                 return;
             }
@@ -987,13 +1140,16 @@ bot.on(
                 isAdmin(userId) &&
                 adminWaitingTime.has(userId)
             ) {
+
                 const seconds =
                     parseOfflineTime(text);
 
                 if (
                     seconds === "MAX"
                 ) {
+
                     await bot.sendMessage(
+
                         msg.chat.id,
 
                         "❌ Максимум — 15 дней.\n\n" +
@@ -1012,7 +1168,9 @@ bot.on(
                 if (
                     seconds === null
                 ) {
+
                     await bot.sendMessage(
+
                         msg.chat.id,
 
                         "❌ Неверный формат.\n\n" +
@@ -1044,6 +1202,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "🔴 Вы теперь не онлайн.\n\n" +
@@ -1073,9 +1232,11 @@ bot.on(
                 isAdmin(userId) &&
                 text === "🟢 Я онлайн"
             ) {
+
                 setAdminOnline(userId);
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "🟢 Вы снова онлайн!\n\n" +
@@ -1095,11 +1256,13 @@ bot.on(
                 isAdmin(userId) &&
                 text === "🔴 Я не онлайн"
             ) {
+
                 adminWaitingTime.add(
                     userId
                 );
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "⏱ На какое время " +
@@ -1123,10 +1286,13 @@ bot.on(
             if (
                 text === "🔐 Войти"
             ) {
+
                 if (
                     !isSubActive(userId)
                 ) {
+
                     await bot.sendMessage(
+
                         msg.chat.id,
 
                         "❌ Вход запрещён.\n\n" +
@@ -1143,12 +1309,13 @@ bot.on(
                 }
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "🔐 Ваша подписка активна.\n\n" +
 
-                    "Чтобы войти в приложение " +
-                    "свяжитесь с @JARBIS_help",
+                    "⏳ Ждите, с вами в скором времени " +
+                    "свяжутся.",
 
                     mainMenu()
                 );
@@ -1163,7 +1330,9 @@ bot.on(
             if (
                 text === "🛒 Купить"
             ) {
+
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "🛒 Выберите тариф:\n\n" +
@@ -1184,7 +1353,9 @@ bot.on(
             if (
                 text === "🛠 Тех.поддержка"
             ) {
+
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "🛠 Тех.поддержка\n\n" +
@@ -1208,7 +1379,9 @@ bot.on(
             if (
                 text === "ℹ️ Помощь"
             ) {
+
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "ℹ️ Помощь\n\n" +
@@ -1239,6 +1412,7 @@ bot.on(
             if (
                 text === "👤 Мой аккаунт"
             ) {
+
                 const user =
                     getUser(userId);
 
@@ -1248,6 +1422,7 @@ bot.on(
                 if (
                     isSubActive(userId)
                 ) {
+
                     subscription =
                         "✅ Подписка активна.\n\n" +
 
@@ -1261,6 +1436,7 @@ bot.on(
                 }
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "👤 Мой аккаунт\n\n" +
@@ -1308,11 +1484,14 @@ bot.on(
                 state.type === "buy" &&
                 state.step === "name"
             ) {
+
                 if (
                     text.length < 2 ||
                     text.length > 100
                 ) {
+
                     await bot.sendMessage(
+
                         msg.chat.id,
 
                         "❌ Имя должно содержать " +
@@ -1335,6 +1514,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "📧 Введите вашу почту:\n\n" +
@@ -1354,13 +1534,16 @@ bot.on(
                 state.type === "buy" &&
                 state.step === "email"
             ) {
+
                 const email =
                     text.toLowerCase().trim();
 
                 if (
                     !validEmail(email)
                 ) {
+
                     await bot.sendMessage(
+
                         msg.chat.id,
 
                         "❌ Неверный формат почты.\n\n" +
@@ -1377,9 +1560,13 @@ bot.on(
 
                 const orderId =
                     createOrder(
+
                         userId,
+
                         state.tariffKey,
+
                         state.name,
+
                         email
                     );
 
@@ -1388,6 +1575,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     msg.chat.id,
 
                     "🧾 ЗАКАЗ СОЗДАН\n\n" +
@@ -1412,10 +1600,13 @@ bot.on(
                     "«📷 Я оплатил» и отправьте чек.",
 
                     {
+
                         parse_mode: "Markdown",
 
                         reply_markup: {
+
                             inline_keyboard: [
+
                                 [
                                     {
                                         text: "📷 Я оплатил",
@@ -1430,6 +1621,7 @@ bot.on(
                                         callback_data: "back"
                                     }
                                 ]
+
                             ]
                         }
                     }
@@ -1439,6 +1631,7 @@ bot.on(
             }
 
         } catch (error) {
+
             console.error(
                 "MESSAGE ERROR:",
                 error
@@ -1454,7 +1647,9 @@ bot.on(
 bot.on(
     "callback_query",
     async query => {
+
         try {
+
             const data =
                 query.data;
 
@@ -1474,6 +1669,7 @@ bot.on(
             if (
                 data === "back"
             ) {
+
                 userStates.delete(
                     userId
                 );
@@ -1487,6 +1683,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     chatId,
 
                     "📋 Главное меню\n\n" +
@@ -1508,11 +1705,15 @@ bot.on(
             if (
                 data === "admin_online"
             ) {
+
                 if (
                     !isAdmin(userId)
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Нет доступа",
                             show_alert: true
@@ -1525,13 +1726,16 @@ bot.on(
                 setAdminOnline(userId);
 
                 await bot.answerCallbackQuery(
+
                     query.id,
+
                     {
                         text: "Вы онлайн 🟢"
                     }
                 );
 
                 await bot.sendMessage(
+
                     chatId,
 
                     "🟢 Вы онлайн!\n\n" +
@@ -1550,11 +1754,15 @@ bot.on(
             if (
                 data === "admin_offline"
             ) {
+
                 if (
                     !isAdmin(userId)
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Нет доступа",
                             show_alert: true
@@ -1573,6 +1781,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     chatId,
 
                     "⏱ На какое время " +
@@ -1596,6 +1805,7 @@ bot.on(
             if (
                 data.startsWith("buy_")
             ) {
+
                 const tariffKey =
                     data.substring(4);
 
@@ -1603,8 +1813,11 @@ bot.on(
                     TARIFFS[tariffKey];
 
                 if (!tariff) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Тариф не найден",
                             show_alert: true
@@ -1615,7 +1828,9 @@ bot.on(
                 }
 
                 userStates.set(
+
                     userId,
+
                     {
                         type: "buy",
                         step: "name",
@@ -1628,6 +1843,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     chatId,
 
                     `📦 Вы выбрали: ${tariff.name}\n\n` +
@@ -1647,6 +1863,7 @@ bot.on(
             if (
                 data.startsWith("paid_")
             ) {
+
                 const orderId =
                     data.substring(5);
 
@@ -1654,8 +1871,11 @@ bot.on(
                     getOrder(orderId);
 
                 if (!order) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Заказ не найден",
                             show_alert: true
@@ -1668,8 +1888,11 @@ bot.on(
                 if (
                     order.user_id !== userId
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text:
                                 "Этот заказ принадлежит другому пользователю",
@@ -1685,6 +1908,7 @@ bot.on(
                 );
 
                 await bot.sendMessage(
+
                     chatId,
 
                     "📷 Отправьте чек оплаты.\n\n" +
@@ -1719,11 +1943,15 @@ bot.on(
             if (
                 data.startsWith("confirm_")
             ) {
+
                 if (
                     !isAdmin(userId)
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Нет доступа",
                             show_alert: true
@@ -1744,8 +1972,11 @@ bot.on(
                 if (
                     !result.success
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text:
                                 result.reason ===
@@ -1761,7 +1992,9 @@ bot.on(
                 }
 
                 await bot.answerCallbackQuery(
+
                     query.id,
+
                     {
                         text:
                             "Оплата подтверждена ✅"
@@ -1769,24 +2002,33 @@ bot.on(
                 );
 
                 try {
+
                     await bot.editMessageReplyMarkup(
+
                         {
                             inline_keyboard: []
                         },
+
                         {
                             chat_id: chatId,
                             message_id: messageId
                         }
                     );
+
                 } catch (_) {}
 
+                // ==================================================
+                // СООБЩЕНИЕ ПОСЛЕ ПОДТВЕРЖДЕНИЯ ОПЛАТЫ
+                // ==================================================
+
                 await bot.sendMessage(
+
                     result.userId,
 
                     "🎉 Оплата подтверждена!\n\n" +
 
-                    "Чтобы войти в приложение " +
-                    "свяжитесь с @JARBIS_help\n\n" +
+                    "⏳ Ждите, с вами в скором времени " +
+                    "свяжутся.\n\n" +
 
                     `👤 Имя: ${result.order.name}\n` +
 
@@ -1817,11 +2059,15 @@ bot.on(
             if (
                 data.startsWith("reject_")
             ) {
+
                 if (
                     !isAdmin(userId)
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Нет доступа",
                             show_alert: true
@@ -1842,8 +2088,11 @@ bot.on(
                 if (
                     !result.success
                 ) {
+
                     await bot.answerCallbackQuery(
+
                         query.id,
+
                         {
                             text: "Заказ уже обработан",
                             show_alert: true
@@ -1854,25 +2103,32 @@ bot.on(
                 }
 
                 await bot.answerCallbackQuery(
+
                     query.id,
+
                     {
                         text: "Заказ отклонён ❌"
                     }
                 );
 
                 try {
+
                     await bot.editMessageReplyMarkup(
+
                         {
                             inline_keyboard: []
                         },
+
                         {
                             chat_id: chatId,
                             message_id: messageId
                         }
                     );
+
                 } catch (_) {}
 
                 await bot.sendMessage(
+
                     result.userId,
 
                     "❌ Ваша оплата не была подтверждена.\n\n" +
@@ -1891,19 +2147,24 @@ bot.on(
             }
 
         } catch (error) {
+
             console.error(
                 "CALLBACK ERROR:",
                 error
             );
 
             try {
+
                 await bot.answerCallbackQuery(
+
                     query.id,
+
                     {
                         text: "Произошла ошибка",
                         show_alert: true
                     }
                 );
+
             } catch (_) {}
         }
     }
@@ -1914,14 +2175,18 @@ bot.on(
 // ============================================================
 
 async function handleReceipt(msg) {
+
     try {
+
         const order =
             getPendingOrder(
                 msg.from.id
             );
 
         if (!order) {
+
             await bot.sendMessage(
+
                 msg.chat.id,
 
                 "❌ У вас нет ожидающего заказа.\n\n" +
@@ -1935,6 +2200,7 @@ async function handleReceipt(msg) {
         }
 
         await bot.sendMessage(
+
             msg.chat.id,
 
             "✅ Чек получен!\n\n" +
@@ -1957,6 +2223,7 @@ async function handleReceipt(msg) {
             ];
 
         const adminText =
+
             "📩 НОВАЯ ЗАЯВКА\n\n" +
 
             `🧾 Заказ: \`${order.order_id}\`\n\n` +
@@ -1979,10 +2246,15 @@ async function handleReceipt(msg) {
         for (
             const adminId of ADMIN_IDS
         ) {
+
             try {
+
                 await bot.sendMessage(
+
                     adminId,
+
                     adminText,
+
                     {
                         parse_mode: "Markdown",
                         ...adminOrderButtons(
@@ -1992,20 +2264,27 @@ async function handleReceipt(msg) {
                 );
 
                 await bot.forwardMessage(
+
                     adminId,
+
                     msg.chat.id,
+
                     msg.message_id
                 );
 
             } catch (error) {
+
                 console.error(
+
                     `Ошибка отправки админу ${adminId}:`,
+
                     error.message
                 );
             }
         }
 
     } catch (error) {
+
         console.error(
             "RECEIPT ERROR:",
             error
@@ -2038,6 +2317,7 @@ bot.on(
 bot.on(
     "polling_error",
     error => {
+
         console.error(
             "❌ TELEGRAM POLLING ERROR:",
             error.message
@@ -2052,6 +2332,7 @@ bot.on(
 process.on(
     "uncaughtException",
     error => {
+
         console.error(
             "❌ UNCAUGHT EXCEPTION:",
             error
@@ -2062,6 +2343,7 @@ process.on(
 process.on(
     "unhandledRejection",
     error => {
+
         console.error(
             "❌ UNHANDLED REJECTION:",
             error
