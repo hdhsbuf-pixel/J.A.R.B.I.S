@@ -24,7 +24,7 @@ const CARD_HOLDER =
     process.env.CARD_HOLDER || "Получатель: Алексей М.";
 
 // ============================================================
-// TOKEN
+// ПРОВЕРКА TOKEN
 // ============================================================
 
 if (!BOT_TOKEN) {
@@ -33,7 +33,7 @@ if (!BOT_TOKEN) {
 }
 
 // ============================================================
-// BOT
+// TELEGRAM BOT
 // ============================================================
 
 const bot = new TelegramBot(BOT_TOKEN, {
@@ -53,10 +53,11 @@ const db = new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
 
 // ============================================================
-// DATABASE HELPERS
+// DATABASE FUNCTIONS
 // ============================================================
 
 function columnExists(table, column) {
+
     const columns = db
         .prepare(`PRAGMA table_info(${table})`)
         .all();
@@ -67,17 +68,15 @@ function columnExists(table, column) {
 }
 
 function addColumn(table, column, definition) {
+
     if (!columnExists(table, column)) {
+
         db.exec(`
             ALTER TABLE ${table}
             ADD COLUMN ${column} ${definition}
         `);
     }
 }
-
-// ============================================================
-// INIT DATABASE
-// ============================================================
 
 function initDb() {
 
@@ -165,6 +164,10 @@ function initDb() {
         `).run(adminId);
     }
 }
+
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ
+// ============================================================
 
 initDb();
 
@@ -576,7 +579,6 @@ function createOrder(
         TARIFFS[tariffKey];
 
     if (!tariff) {
-
         throw new Error(
             "Тариф не найден"
         );
@@ -604,12 +606,19 @@ function createOrder(
     `).run(
 
         orderId,
+
         userId,
+
         tariffKey,
+
         tariff.price,
+
         "pending",
+
         new Date().toISOString(),
+
         name,
+
         email
     );
 
@@ -977,6 +986,40 @@ const adminWaitingTime =
     new Set();
 
 // ============================================================
+// СЕКРЕТНАЯ КОМАНДА /как ты
+// ============================================================
+
+bot.onText(
+    /^\/как ты$/,
+    async msg => {
+
+        try {
+
+            // Команда работает только для администраторов
+            if (!isAdmin(msg.from.id)) {
+                return;
+            }
+
+            await bot.sendMessage(
+
+                msg.chat.id,
+
+                "J.A.R.B.I.S: В полном порядке, сэр. " +
+                "Я функционирую нормально, но в конце фраз " +
+                "могу выдавать белиберду..."
+            );
+
+        } catch (error) {
+
+            console.error(
+                "SECRET COMMAND ERROR:",
+                error
+            );
+        }
+    }
+);
+
+// ============================================================
 // START
 // ============================================================
 
@@ -1024,10 +1067,8 @@ bot.onText(
 
                     "👨‍💼 Панель администратора\n\n" +
 
-                    `🆔 Ваш ID: ${userId}\n` +
-
                     `🟢 Администраторов онлайн: ` +
-                    `${getOnlineAdminsCount()}/${ADMIN_IDS.length}`,
+                    `${getOnlineAdminsCount()}/2`,
 
                     adminMenu()
                 );
@@ -1085,75 +1126,10 @@ bot.onText(
 
             "👨‍💼 Панель администратора\n\n" +
 
-            `🆔 Ваш ID: ${msg.from.id}\n` +
-
             `🟢 Администраторов онлайн: ` +
-            `${getOnlineAdminsCount()}/${ADMIN_IDS.length}`,
+            `${getOnlineAdminsCount()}/2`,
 
             adminMenu()
-        );
-    }
-);
-
-// ============================================================
-// /ADMINCHECK
-// ============================================================
-
-bot.onText(
-    /^\/admincheck$/,
-    async msg => {
-
-        if (
-            !isAdmin(
-                msg.from.id
-            )
-        ) {
-
-            return;
-        }
-
-        let result =
-            "🔎 Проверка администраторов\n\n";
-
-        for (
-            const adminId of ADMIN_IDS
-        ) {
-
-            try {
-
-                await bot.sendMessage(
-
-                    adminId,
-
-                    "🔎 Тест связи с ботом.\n\n" +
-
-                    `🆔 ID: ${adminId}\n\n` +
-
-                    "✅ Бот может отправлять вам сообщения."
-                );
-
-                result +=
-                    `✅ ${adminId} — сообщение отправлено\n`;
-
-            } catch (error) {
-
-                result +=
-                    `❌ ${adminId} — ${error.message}\n`;
-
-                console.error(
-                    `ADMIN CHECK ERROR ${adminId}:`,
-                    error.message
-                );
-            }
-        }
-
-        await bot.sendMessage(
-
-            msg.chat.id,
-
-            result,
-
-            mainMenu()
         );
     }
 );
@@ -1411,11 +1387,11 @@ bot.on(
 
                     "🛠 Тех.поддержка\n\n" +
 
-                    "Тех.поддержка По приложению: " +
-                    `${SUPPORT_APP}\n\n` +
+                    "Тех.поддержка По\n" +
+                    `приложению: ${SUPPORT_APP}\n\n` +
 
-                    "Тех.поддержка по боту: " +
-                    `${SUPPORT_BOT}`,
+                    "Тех.поддержка по\n" +
+                    `боту: ${SUPPORT_BOT}`,
 
                     mainMenu()
                 );
@@ -2068,6 +2044,10 @@ bot.on(
 
                 } catch (_) {}
 
+                // ==================================================
+                // СООБЩЕНИЕ ПОСЛЕ ПОДТВЕРЖДЕНИЯ
+                // ==================================================
+
                 await bot.sendMessage(
 
                     result.userId,
@@ -2218,131 +2198,6 @@ bot.on(
 );
 
 // ============================================================
-// ОТПРАВКА ЗАЯВКИ ВСЕМ АДМИНАМ
-// ============================================================
-
-async function sendOrderToAdmins(
-    msg,
-    order
-) {
-
-    const username =
-        msg.from.username
-            ? `@${msg.from.username}`
-            : "нет";
-
-    const tariff =
-        TARIFFS[
-            order.tariff
-        ];
-
-    const adminText =
-
-        "📩 НОВАЯ ЗАЯВКА\n\n" +
-
-        `🧾 Заказ: \`${order.order_id}\`\n\n` +
-
-        `👤 Имя: ${order.name}\n` +
-
-        `📧 Почта: ${order.email}\n` +
-
-        `🆔 User ID: ${order.user_id}\n` +
-
-        `👤 Username: ${username}\n\n` +
-
-        `📦 Тариф: ${tariff.name}\n` +
-
-        `💰 Сумма: ${order.amount} ₽\n\n` +
-
-        "💳 Проверьте перевод " +
-        "и выберите действие:";
-
-    const results = [];
-
-    for (
-        const adminId of ADMIN_IDS
-    ) {
-
-        try {
-
-            // Сначала отправляем карточку заявки
-            await bot.sendMessage(
-
-                adminId,
-
-                adminText,
-
-                {
-                    parse_mode: "Markdown",
-
-                    ...adminOrderButtons(
-                        order.order_id
-                    )
-                }
-            );
-
-            console.log(
-                `✅ Заявка ${order.order_id} отправлена админу ${adminId}`
-            );
-
-            results.push({
-                adminId,
-                success: true
-            });
-
-        } catch (error) {
-
-            console.error(
-
-                `❌ НЕ УДАЛОСЬ ОТПРАВИТЬ ЗАЯВКУ ` +
-                `${order.order_id} АДМИНУ ${adminId}:`,
-
-                error.message
-            );
-
-            results.push({
-                adminId,
-                success: false,
-                error: error.message
-            });
-
-            continue;
-        }
-
-        // Отправляем сам чек отдельно
-        try {
-
-            await bot.copyMessage(
-
-                adminId,
-
-                msg.chat.id,
-
-                msg.message_id
-            );
-
-            console.log(
-
-                `✅ Чек ${order.order_id} ` +
-                `скопирован админу ${adminId}`
-            );
-
-        } catch (error) {
-
-            console.error(
-
-                `⚠️ Не удалось скопировать чек ` +
-                `админу ${adminId}:`,
-
-                error.message
-            );
-        }
-    }
-
-    return results;
-}
-
-// ============================================================
 // RECEIPT
 // ============================================================
 
@@ -2384,34 +2239,75 @@ async function handleReceipt(msg) {
             mainMenu()
         );
 
-        const results =
-            await sendOrderToAdmins(
-                msg,
-                order
-            );
+        const username =
+            msg.from.username
+                ? `@${msg.from.username}`
+                : "нет";
 
-        const failed =
-            results.filter(
-                item => !item.success
-            );
+        const tariff =
+            TARIFFS[
+                order.tariff
+            ];
 
-        if (
-            failed.length === 0
+        const adminText =
+
+            "📩 НОВАЯ ЗАЯВКА\n\n" +
+
+            `🧾 Заказ: \`${order.order_id}\`\n\n` +
+
+            `👤 Имя: ${order.name}\n` +
+
+            `📧 Почта: ${order.email}\n` +
+
+            `👤 User ID: ${order.user_id}\n` +
+
+            `👤 Username: ${username}\n\n` +
+
+            `📦 Тариф: ${tariff.name}\n` +
+
+            `💰 Сумма: ${order.amount} ₽\n\n` +
+
+            "💳 Проверьте перевод " +
+            "и выберите действие:";
+
+        for (
+            const adminId of ADMIN_IDS
         ) {
 
-            console.log(
+            try {
 
-                `✅ Заявка ${order.order_id} ` +
-                "доставлена всем администраторам."
-            );
+                await bot.sendMessage(
 
-        } else {
+                    adminId,
 
-            console.error(
+                    adminText,
 
-                `⚠️ Заявка ${order.order_id}: ` +
-                `не доставлена ${failed.length} админу(ам).`
-            );
+                    {
+                        parse_mode: "Markdown",
+                        ...adminOrderButtons(
+                            order.order_id
+                        )
+                    }
+                );
+
+                await bot.forwardMessage(
+
+                    adminId,
+
+                    msg.chat.id,
+
+                    msg.message_id
+                );
+
+            } catch (error) {
+
+                console.error(
+
+                    `Ошибка отправки админу ${adminId}:`,
+
+                    error.message
+                );
+            }
         }
 
     } catch (error) {
@@ -2457,7 +2353,7 @@ bot.on(
 );
 
 // ============================================================
-// ERRORS
+// UNCAUGHT ERRORS
 // ============================================================
 
 process.on(
@@ -2492,16 +2388,6 @@ console.log(
 
 console.log(
     "🤖 J.A.R.B.I.S БОТ ЗАПУЩЕН"
-);
-
-console.log(
-    "👨‍💼 ADMIN 1:",
-    ADMIN_IDS[0]
-);
-
-console.log(
-    "👨‍💼 ADMIN 2:",
-    ADMIN_IDS[1]
 );
 
 console.log(
