@@ -6,16 +6,6 @@ const fs = require("fs");
 // ============================================================
 // J.A.R.B.I.S — TELEGRAM SUBSCRIPTION BOT
 // ============================================================
-// Регистрация удалена.
-// SMTP не используется.
-// Вход = проверка активной подписки.
-// После подтверждения оплаты пользователь получает сообщение
-// с информацией о покупке и уведомлением о связи.
-// ============================================================
-
-// ============================================================
-// НАСТРОЙКИ
-// ============================================================
 
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 
@@ -34,7 +24,7 @@ const CARD_HOLDER =
     process.env.CARD_HOLDER || "Получатель: Алексей М.";
 
 // ============================================================
-// ПРОВЕРКА TOKEN
+// TOKEN
 // ============================================================
 
 if (!BOT_TOKEN) {
@@ -43,7 +33,7 @@ if (!BOT_TOKEN) {
 }
 
 // ============================================================
-// TELEGRAM BOT
+// BOT
 // ============================================================
 
 const bot = new TelegramBot(BOT_TOKEN, {
@@ -63,7 +53,7 @@ const db = new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
 
 // ============================================================
-// DATABASE FUNCTIONS
+// DATABASE HELPERS
 // ============================================================
 
 function columnExists(table, column) {
@@ -84,6 +74,10 @@ function addColumn(table, column, definition) {
         `);
     }
 }
+
+// ============================================================
+// INIT DATABASE
+// ============================================================
 
 function initDb() {
 
@@ -171,10 +165,6 @@ function initDb() {
         `).run(adminId);
     }
 }
-
-// ============================================================
-// ИНИЦИАЛИЗАЦИЯ БАЗЫ
-// ============================================================
 
 initDb();
 
@@ -586,6 +576,7 @@ function createOrder(
         TARIFFS[tariffKey];
 
     if (!tariff) {
+
         throw new Error(
             "Тариф не найден"
         );
@@ -613,19 +604,12 @@ function createOrder(
     `).run(
 
         orderId,
-
         userId,
-
         tariffKey,
-
         tariff.price,
-
         "pending",
-
         new Date().toISOString(),
-
         name,
-
         email
     );
 
@@ -1040,8 +1024,10 @@ bot.onText(
 
                     "👨‍💼 Панель администратора\n\n" +
 
+                    `🆔 Ваш ID: ${userId}\n` +
+
                     `🟢 Администраторов онлайн: ` +
-                    `${getOnlineAdminsCount()}/2`,
+                    `${getOnlineAdminsCount()}/${ADMIN_IDS.length}`,
 
                     adminMenu()
                 );
@@ -1099,10 +1085,75 @@ bot.onText(
 
             "👨‍💼 Панель администратора\n\n" +
 
+            `🆔 Ваш ID: ${msg.from.id}\n` +
+
             `🟢 Администраторов онлайн: ` +
-            `${getOnlineAdminsCount()}/2`,
+            `${getOnlineAdminsCount()}/${ADMIN_IDS.length}`,
 
             adminMenu()
+        );
+    }
+);
+
+// ============================================================
+// /ADMINCHECK
+// ============================================================
+
+bot.onText(
+    /^\/admincheck$/,
+    async msg => {
+
+        if (
+            !isAdmin(
+                msg.from.id
+            )
+        ) {
+
+            return;
+        }
+
+        let result =
+            "🔎 Проверка администраторов\n\n";
+
+        for (
+            const adminId of ADMIN_IDS
+        ) {
+
+            try {
+
+                await bot.sendMessage(
+
+                    adminId,
+
+                    "🔎 Тест связи с ботом.\n\n" +
+
+                    `🆔 ID: ${adminId}\n\n` +
+
+                    "✅ Бот может отправлять вам сообщения."
+                );
+
+                result +=
+                    `✅ ${adminId} — сообщение отправлено\n`;
+
+            } catch (error) {
+
+                result +=
+                    `❌ ${adminId} — ${error.message}\n`;
+
+                console.error(
+                    `ADMIN CHECK ERROR ${adminId}:`,
+                    error.message
+                );
+            }
+        }
+
+        await bot.sendMessage(
+
+            msg.chat.id,
+
+            result,
+
+            mainMenu()
         );
     }
 );
@@ -1360,11 +1411,11 @@ bot.on(
 
                     "🛠 Тех.поддержка\n\n" +
 
-                    "Тех.поддержка По\n" +
-                    `приложению: ${SUPPORT_APP}\n\n` +
+                    "Тех.поддержка По приложению: " +
+                    `${SUPPORT_APP}\n\n` +
 
-                    "Тех.поддержка по\n" +
-                    `боту: ${SUPPORT_BOT}`,
+                    "Тех.поддержка по боту: " +
+                    `${SUPPORT_BOT}`,
 
                     mainMenu()
                 );
@@ -1926,7 +1977,7 @@ bot.on(
                     }\n\n` +
 
                     "После отправки чек будет " +
-                    "передан администратору.",
+                    "передан администраторам.",
 
                     {
                         parse_mode: "Markdown"
@@ -2016,10 +2067,6 @@ bot.on(
                     );
 
                 } catch (_) {}
-
-                // ==================================================
-                // СООБЩЕНИЕ ПОСЛЕ ПОДТВЕРЖДЕНИЯ ОПЛАТЫ
-                // ==================================================
 
                 await bot.sendMessage(
 
@@ -2171,6 +2218,131 @@ bot.on(
 );
 
 // ============================================================
+// ОТПРАВКА ЗАЯВКИ ВСЕМ АДМИНАМ
+// ============================================================
+
+async function sendOrderToAdmins(
+    msg,
+    order
+) {
+
+    const username =
+        msg.from.username
+            ? `@${msg.from.username}`
+            : "нет";
+
+    const tariff =
+        TARIFFS[
+            order.tariff
+        ];
+
+    const adminText =
+
+        "📩 НОВАЯ ЗАЯВКА\n\n" +
+
+        `🧾 Заказ: \`${order.order_id}\`\n\n` +
+
+        `👤 Имя: ${order.name}\n` +
+
+        `📧 Почта: ${order.email}\n` +
+
+        `🆔 User ID: ${order.user_id}\n` +
+
+        `👤 Username: ${username}\n\n` +
+
+        `📦 Тариф: ${tariff.name}\n` +
+
+        `💰 Сумма: ${order.amount} ₽\n\n` +
+
+        "💳 Проверьте перевод " +
+        "и выберите действие:";
+
+    const results = [];
+
+    for (
+        const adminId of ADMIN_IDS
+    ) {
+
+        try {
+
+            // Сначала отправляем карточку заявки
+            await bot.sendMessage(
+
+                adminId,
+
+                adminText,
+
+                {
+                    parse_mode: "Markdown",
+
+                    ...adminOrderButtons(
+                        order.order_id
+                    )
+                }
+            );
+
+            console.log(
+                `✅ Заявка ${order.order_id} отправлена админу ${adminId}`
+            );
+
+            results.push({
+                adminId,
+                success: true
+            });
+
+        } catch (error) {
+
+            console.error(
+
+                `❌ НЕ УДАЛОСЬ ОТПРАВИТЬ ЗАЯВКУ ` +
+                `${order.order_id} АДМИНУ ${adminId}:`,
+
+                error.message
+            );
+
+            results.push({
+                adminId,
+                success: false,
+                error: error.message
+            });
+
+            continue;
+        }
+
+        // Отправляем сам чек отдельно
+        try {
+
+            await bot.copyMessage(
+
+                adminId,
+
+                msg.chat.id,
+
+                msg.message_id
+            );
+
+            console.log(
+
+                `✅ Чек ${order.order_id} ` +
+                `скопирован админу ${adminId}`
+            );
+
+        } catch (error) {
+
+            console.error(
+
+                `⚠️ Не удалось скопировать чек ` +
+                `админу ${adminId}:`,
+
+                error.message
+            );
+        }
+    }
+
+    return results;
+}
+
+// ============================================================
 // RECEIPT
 // ============================================================
 
@@ -2212,75 +2384,34 @@ async function handleReceipt(msg) {
             mainMenu()
         );
 
-        const username =
-            msg.from.username
-                ? `@${msg.from.username}`
-                : "нет";
+        const results =
+            await sendOrderToAdmins(
+                msg,
+                order
+            );
 
-        const tariff =
-            TARIFFS[
-                order.tariff
-            ];
+        const failed =
+            results.filter(
+                item => !item.success
+            );
 
-        const adminText =
-
-            "📩 НОВАЯ ЗАЯВКА\n\n" +
-
-            `🧾 Заказ: \`${order.order_id}\`\n\n` +
-
-            `👤 Имя: ${order.name}\n` +
-
-            `📧 Почта: ${order.email}\n` +
-
-            `👤 User ID: ${order.user_id}\n` +
-
-            `👤 Username: ${username}\n\n` +
-
-            `📦 Тариф: ${tariff.name}\n` +
-
-            `💰 Сумма: ${order.amount} ₽\n\n` +
-
-            "💳 Проверьте перевод " +
-            "и выберите действие:";
-
-        for (
-            const adminId of ADMIN_IDS
+        if (
+            failed.length === 0
         ) {
 
-            try {
+            console.log(
 
-                await bot.sendMessage(
+                `✅ Заявка ${order.order_id} ` +
+                "доставлена всем администраторам."
+            );
 
-                    adminId,
+        } else {
 
-                    adminText,
+            console.error(
 
-                    {
-                        parse_mode: "Markdown",
-                        ...adminOrderButtons(
-                            order.order_id
-                        )
-                    }
-                );
-
-                await bot.forwardMessage(
-
-                    adminId,
-
-                    msg.chat.id,
-
-                    msg.message_id
-                );
-
-            } catch (error) {
-
-                console.error(
-
-                    `Ошибка отправки админу ${adminId}:`,
-
-                    error.message
-                );
-            }
+                `⚠️ Заявка ${order.order_id}: ` +
+                `не доставлена ${failed.length} админу(ам).`
+            );
         }
 
     } catch (error) {
@@ -2326,7 +2457,7 @@ bot.on(
 );
 
 // ============================================================
-// UNCAUGHT ERRORS
+// ERRORS
 // ============================================================
 
 process.on(
@@ -2361,6 +2492,16 @@ console.log(
 
 console.log(
     "🤖 J.A.R.B.I.S БОТ ЗАПУЩЕН"
+);
+
+console.log(
+    "👨‍💼 ADMIN 1:",
+    ADMIN_IDS[0]
+);
+
+console.log(
+    "👨‍💼 ADMIN 2:",
+    ADMIN_IDS[1]
 );
 
 console.log(
