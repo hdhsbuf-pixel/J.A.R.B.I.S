@@ -18,7 +18,7 @@ const ADMIN_IDS = [
     8882462981
 ];
 
-const SUPPORT_APP = "@JARBIS_help";
+const SUPPORT_APP = "@JARBIS_help1";
 const SUPPORT_BOT = "@sakuraYTST";
 
 // --- ИИ для админов (ключ хранится в Railway -> Variables) ---
@@ -970,7 +970,7 @@ function adminMenu() {
 
                 [
                     {
-                        text: "🤖 ИИ для админов",
+                        text: "🤖 ИИ для админов (временно не работает)",
                         callback_data: "admin_ai"
                     }
                 ],
@@ -1073,7 +1073,7 @@ async function askAI(userId, text) {
 
     if (!AI_API_KEY) {
 
-        return "❌ AI_API_KEY не задан в Railway, сэр.";
+        return "❌ временно не работает, сэр.";
     }
 
     const history =
