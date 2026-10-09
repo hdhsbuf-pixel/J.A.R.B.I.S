@@ -21,6 +21,10 @@ const ADMIN_IDS = [
 const SUPPORT_APP = "@JARBIS_help";
 const SUPPORT_BOT = "@sakuraYTST";
 
+// --- ИИ для админов (ключ хранится в Railway -> Variables) ---
+const AI_API_KEY = process.env.AI_API_KEY;
+const AI_MODEL = process.env.AI_MODEL || "gemini-3.8-flash";
+
 const CARD_NUMBER =
     process.env.CARD_NUMBER || "2200 1536 2364 5513";
 
@@ -45,6 +49,50 @@ const bot = new TelegramBot(BOT_TOKEN, {
 });
 
 // ============================================================
+// КНОПКА ИИ В ГЛАВНОМ МЕНЮ (только для админов)
+// ============================================================
+
+const AI_BUTTON = "🤖 ИИ";
+
+const _sendMessage = bot.sendMessage.bind(bot);
+
+bot.sendMessage = (chatId, text, options = {}) => {
+
+    const kb =
+        options &&
+        options.reply_markup &&
+        options.reply_markup.keyboard;
+
+    if (
+        kb &&
+        isAdmin(chatId) &&
+        !JSON.stringify(kb).includes(AI_BUTTON)
+    ) {
+
+        options = {
+            ...options,
+            reply_markup: {
+                ...options.reply_markup,
+                keyboard: [
+                    ...kb,
+                    [
+                        {
+                            text: AI_BUTTON
+                        }
+                    ]
+                ]
+            }
+        };
+    }
+
+    return _sendMessage(
+        chatId,
+        text,
+        options
+    );
+};
+
+// ============================================================
 // DATABASE
 // ============================================================
 
@@ -63,7 +111,7 @@ db.pragma("journal_mode = WAL");
 function columnExists(table, column) {
 
     const columns = db
-        .prepare(PRAGMA table_info(${table}))
+        .prepare(`PRAGMA table_info(${table})`)
         .all();
 
     return columns.some(
@@ -75,16 +123,16 @@ function addColumn(table, column, definition) {
 
     if (!columnExists(table, column)) {
 
-        db.exec(
+        db.exec(`
             ALTER TABLE ${table}
             ADD COLUMN ${column} ${definition}
-        );
+        `);
     }
 }
 
 function initDb() {
 
-    db.exec(
+    db.exec(`
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
@@ -111,7 +159,7 @@ function initDb() {
             online INTEGER DEFAULT 1,
             offline_until TEXT
         );
-    );
+    `);
 
     addColumn(
         "users",
@@ -157,7 +205,7 @@ function initDb() {
 
     for (const adminId of ADMIN_IDS) {
 
-        db.prepare(
+        db.prepare(`
             INSERT OR IGNORE INTO admins
             (
                 user_id,
@@ -165,7 +213,7 @@ function initDb() {
                 offline_until
             )
             VALUES (?, 1, NULL)
-        ).run(adminId);
+        `).run(adminId);
     }
 }
 
@@ -177,25 +225,25 @@ initDb();
 
 function upsertUser(userId, username = null) {
 
-db.prepare(
+    db.prepare(`
         INSERT OR IGNORE INTO users
         (
             user_id,
             username
         )
         VALUES (?, ?)
-    ).run(
+    `).run(
         userId,
         username
     );
 
     if (username) {
 
-        db.prepare(
+        db.prepare(`
             UPDATE users
             SET username = ?
             WHERE user_id = ?
-        ).run(
+        `).run(
             username,
             userId
         );
@@ -204,11 +252,11 @@ db.prepare(
 
 function getUser(userId) {
 
-    return db.prepare(
+    return db.prepare(`
         SELECT *
         FROM users
         WHERE user_id = ?
-    ).get(userId);
+    `).get(userId);
 }
 
 // ============================================================
@@ -269,11 +317,11 @@ function isAdmin(userId) {
 function getAdminStatus(userId) {
 
     const row =
-        db.prepare(
+        db.prepare(`
             SELECT *
             FROM admins
             WHERE user_id = ?
-        ).get(userId);
+        `).get(userId);
 
     if (!row) {
 
@@ -294,13 +342,13 @@ function getAdminStatus(userId) {
 
         if (until <= new Date()) {
 
-            db.prepare(
+            db.prepare(`
                 UPDATE admins
                 SET
                     online = 1,
                     offline_until = NULL
                 WHERE user_id = ?
-            ).run(userId);
+            `).run(userId);
 
             return {
                 online: true
@@ -320,24 +368,24 @@ function getAdminStatus(userId) {
 
 function setAdminOnline(userId) {
 
-    db.prepare(
+    db.prepare(`
         UPDATE admins
         SET
             online = 1,
             offline_until = NULL
         WHERE user_id = ?
-    ).run(userId);
+    `).run(userId);
 }
 
 function setAdminOffline(userId, until) {
 
-    db.prepare(
+    db.prepare(`
         UPDATE admins
         SET
             online = 0,
             offline_until = ?
         WHERE user_id = ?
-    ).run(
+    `).run(
         until.toISOString(),
         userId
     );
@@ -418,7 +466,7 @@ function parseOfflineTime(text) {
         }
     }
 
-const cleaned =
+    const cleaned =
         value
             .replace(
                 /(\d+)\s*(d|h|m|s)/g,
@@ -472,19 +520,19 @@ function formatDuration(seconds) {
     seconds %= 60;
 
     if (days) {
-        result.push(${days}д);
+        result.push(`${days}д`);
     }
 
     if (hours) {
-        result.push(${hours}ч);
+        result.push(`${hours}ч`);
     }
 
     if (minutes) {
-        result.push(${minutes}мин);
+        result.push(`${minutes}мин`);
     }
 
     if (seconds) {
-        result.push(${seconds}сек);
+        result.push(`${seconds}сек`);
     }
 
     return result.join(" ");
@@ -546,11 +594,11 @@ function setSubscription(userId, days) {
             days * 86400000
         );
 
-    db.prepare(
+    db.prepare(`
         UPDATE users
         SET sub_until = ?
         WHERE user_id = ?
-    ).run(
+    `).run(
         newUntil.toISOString(),
         userId
     );
@@ -585,7 +633,7 @@ function createOrder(
             .toString("hex")
             .toUpperCase();
 
-    db.prepare(
+    db.prepare(`
         INSERT INTO payments
         (
             order_id,
@@ -598,7 +646,7 @@ function createOrder(
             email
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ).run(
+    `).run(
 
         orderId,
         userId,
@@ -610,13 +658,13 @@ function createOrder(
         email
     );
 
-    db.prepare(
+    db.prepare(`
         UPDATE users
         SET
             name = ?,
             email = ?
         WHERE user_id = ?
-    ).run(
+    `).run(
         name,
         email,
         userId
@@ -627,16 +675,16 @@ function createOrder(
 
 function getOrder(orderId) {
 
-    return db.prepare(
+    return db.prepare(`
         SELECT *
         FROM payments
         WHERE order_id = ?
-    ).get(orderId);
+    `).get(orderId);
 }
 
 function getPendingOrder(userId) {
 
-    return db.prepare(
+    return db.prepare(`
         SELECT *
         FROM payments
         WHERE
@@ -644,7 +692,7 @@ function getPendingOrder(userId) {
             AND status = 'pending'
         ORDER BY created_at DESC
         LIMIT 1
-    ).get(userId);
+    `).get(userId);
 }
 
 // ============================================================
@@ -674,7 +722,7 @@ function confirmOrder(orderId) {
         };
     }
 
-const tariff =
+    const tariff =
         TARIFFS[order.tariff];
 
     if (!tariff) {
@@ -691,7 +739,7 @@ const tariff =
             tariff.days
         );
 
-    db.prepare(
+    db.prepare(`
         UPDATE payments
         SET
             status = 'paid',
@@ -699,17 +747,17 @@ const tariff =
         WHERE
             order_id = ?
             AND status = 'pending'
-    ).run(
+    `).run(
         new Date().toISOString(),
         orderId
     );
 
-    db.prepare(
+    db.prepare(`
         UPDATE users
         SET total_paid =
             total_paid + ?
         WHERE user_id = ?
-    ).run(
+    `).run(
         order.amount,
         order.user_id
     );
@@ -754,13 +802,13 @@ function rejectOrder(orderId) {
         };
     }
 
-    db.prepare(
+    db.prepare(`
         UPDATE payments
         SET status = 'rejected'
         WHERE
             order_id = ?
             AND status = 'pending'
-    ).run(orderId);
+    `).run(orderId);
 
     return {
 
@@ -882,7 +930,7 @@ function buyMenu() {
                     }
                 ],
 
-[
+                [
                     {
                         text: "⬅️ Назад",
                         callback_data: "back"
@@ -922,6 +970,13 @@ function adminMenu() {
 
                 [
                     {
+                        text: "🤖 ИИ для админов",
+                        callback_data: "admin_ai"
+                    }
+                ],
+
+                [
+                    {
                         text: "⬅️ Главное меню",
                         callback_data: "back"
                     }
@@ -948,13 +1003,13 @@ function adminOrderButtons(orderId) {
                     {
                         text: "✅ Подтвердить",
                         callback_data:
-                            confirm_${orderId}
+                            `confirm_${orderId}`
                     },
 
                     {
                         text: "❌ Отклонить",
                         callback_data:
-                            reject_${orderId}
+                            `reject_${orderId}`
                     }
                 ]
 
@@ -972,6 +1027,137 @@ const userStates =
 
 const adminWaitingTime =
     new Set();
+
+// ============================================================
+// ИИ ДЛЯ АДМИНОВ
+// ============================================================
+
+const aiMode =
+    new Set();
+
+const aiHistory =
+    new Map();
+
+const AI_SYSTEM =
+    "Ты J.A.R.B.I.S — ИИ-помощник администраторов бота подписок. " +
+    "Обращайся «сэр». Отвечай по-русски, кратко и по делу.";
+
+function aiMenu() {
+
+    return {
+
+        reply_markup: {
+
+            inline_keyboard: [
+
+                [
+                    {
+                        text: "🧹 Очистить диалог",
+                        callback_data: "ai_clear"
+                    }
+                ],
+
+                [
+                    {
+                        text: "⛔ Выключить ИИ",
+                        callback_data: "ai_off"
+                    }
+                ]
+
+            ]
+        }
+    };
+}
+
+async function askAI(userId, text) {
+
+    if (!AI_API_KEY) {
+
+        return "❌ AI_API_KEY не задан в Railway, сэр.";
+    }
+
+    const history =
+        aiHistory.get(userId) || [];
+
+    history.push({
+        role: "user",
+        parts: [{ text }]
+    });
+
+    while (history.length > 20) {
+        history.splice(0, 2);
+    }
+
+    const res = await fetch(
+
+        `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`,
+
+        {
+            method: "POST",
+
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": AI_API_KEY
+            },
+
+            body: JSON.stringify({
+
+                systemInstruction: {
+                    parts: [{ text: AI_SYSTEM }]
+                },
+
+                contents: history
+            })
+        }
+    );
+
+    const data =
+        await res.json();
+
+    if (!res.ok) {
+
+        history.pop();
+
+        throw new Error(
+            (data &&
+                data.error &&
+                data.error.message) ||
+            `HTTP ${res.status}`
+        );
+    }
+
+    const parts =
+        (data &&
+            data.candidates &&
+            data.candidates[0] &&
+            data.candidates[0].content &&
+            data.candidates[0].content.parts) ||
+        [];
+
+    const answer =
+        parts
+            .map(p => p.text || "")
+            .join("");
+
+    if (!answer) {
+
+        history.pop();
+
+        return "🤔 ИИ не дал ответ, сэр. Переформулируйте вопрос.";
+    }
+
+    history.push({
+        role: "model",
+        parts: [{ text: answer }]
+    });
+
+    aiHistory.set(
+        userId,
+        history
+    );
+
+    return answer;
+}
 
 // ============================================================
 // START
@@ -1023,8 +1209,8 @@ bot.onText(
 
                     "👨‍💼 Панель администратора\n\n" +
 
-                    🟢 Администраторов онлайн:  +
-                    ${getOnlineAdminsCount()}/2,
+                    `🟢 Администраторов онлайн: ` +
+                    `${getOnlineAdminsCount()}/2`,
 
                     adminMenu()
                 );
@@ -1052,7 +1238,7 @@ bot.onText(
 
             msg.chat.id,
 
-            🆔 Ваш Telegram ID:\n\n${msg.from.id},
+            `🆔 Ваш Telegram ID:\n\n${msg.from.id}`,
 
             mainMenu()
         );
@@ -1080,10 +1266,10 @@ bot.onText(
 
             msg.chat.id,
 
-"👨‍💼 Панель администратора\n\n" +
+            "👨‍💼 Панель администратора\n\n" +
 
-            🟢 Администраторов онлайн:  +
-            ${getOnlineAdminsCount()}/2,
+            `🟢 Администраторов онлайн: ` +
+            `${getOnlineAdminsCount()}/2`,
 
             adminMenu()
         );
@@ -1252,7 +1438,7 @@ bot.on(
                         seconds * 1000
                     );
 
-setAdminOffline(
+                setAdminOffline(
                     userId,
                     until
                 );
@@ -1267,13 +1453,13 @@ setAdminOffline(
 
                     "🔴 Вы теперь не онлайн.\n\n" +
 
-                    ⏱ Время: ${
+                    `⏱ Время: ${
                         formatDuration(seconds)
-                    }\n +
+                    }\n` +
 
-                    🕐 До: ${
+                    `🕐 До: ${
                         until.toLocaleString("ru-RU")
-                    }\n\n +
+                    }\n\n` +
 
                     "Когда вернётесь, " +
                     "нажмите «🟢 Я онлайн».",
@@ -1420,11 +1606,11 @@ setAdminOffline(
 
                     "🛠 Тех.поддержка\n\n" +
 
-"Тех.поддержка По\n" +
-                    приложению: ${SUPPORT_APP}\n\n +
+                    "Тех.поддержка По\n" +
+                    `приложению: ${SUPPORT_APP}\n\n` +
 
                     "Тех.поддержка по\n" +
-                    боту: ${SUPPORT_BOT},
+                    `боту: ${SUPPORT_BOT}`,
 
                     mainMenu()
                 );
@@ -1486,13 +1672,13 @@ setAdminOffline(
                     subscription =
                         "✅ Подписка активна.\n\n" +
 
-                        📅 До: ${
+                        `📅 До: ${
                             new Date(
                                 user.sub_until
                             ).toLocaleString(
                                 "ru-RU"
                             )
-                        };
+                        }`;
                 }
 
                 await bot.sendMessage(
@@ -1501,26 +1687,129 @@ setAdminOffline(
 
                     "👤 Мой аккаунт\n\n" +
 
-                    🆔 Telegram ID: ${userId}\n +
+                    `🆔 Telegram ID: ${userId}\n` +
 
-                    👤 Username: ${
+                    `👤 Username: ${
                         msg.from.username
                             ? "@" + msg.from.username
                             : "не указан"
-                    }\n\n +
+                    }\n\n` +
 
-                    📧 Почта: ${
+                    `📧 Почта: ${
                         user.email || "не указана"
-                    }\n\n +
+                    }\n\n` +
 
-                    💰 Всего оплачено: ${
+                    `💰 Всего оплачено: ${
                         user.total_paid || 0
-                    } ₽\n\n +
+                    } ₽\n\n` +
 
                     subscription,
 
                     mainMenu()
                 );
+
+                return;
+            }
+
+            // ==================================================
+            // ИИ ДЛЯ АДМИНОВ: кнопка «🤖 ИИ» или команда /ии
+            // ==================================================
+
+            if (
+                text === AI_BUTTON ||
+                text === "/ии"
+            ) {
+
+                if (
+                    !isAdmin(userId)
+                ) {
+
+                    await bot.sendMessage(
+
+                        msg.chat.id,
+
+                        "⛔ Эта команда только для администраторов."
+                    );
+
+                    return;
+                }
+
+                adminWaitingTime.delete(
+                    userId
+                );
+
+                aiMode.add(
+                    userId
+                );
+
+                await bot.sendMessage(
+
+                    msg.chat.id,
+
+                    "🤖 ИИ для админов включён.\n\n" +
+
+                    "Пишите вопрос обычным сообщением, сэр.",
+
+                    aiMenu()
+                );
+
+                return;
+            }
+
+            // ==================================================
+            // ИИ ДЛЯ АДМИНОВ: ответы (пока режим включён)
+            // ==================================================
+
+            if (
+                isAdmin(userId) &&
+                aiMode.has(userId)
+            ) {
+
+                await bot.sendChatAction(
+                    msg.chat.id,
+                    "typing"
+                );
+
+                try {
+
+                    const answer =
+                        await askAI(
+                            userId,
+                            text
+                        );
+
+                    for (
+                        let i = 0;
+                        i < answer.length;
+                        i += 4000
+                    ) {
+
+                        await bot.sendMessage(
+
+                            msg.chat.id,
+
+                            answer.slice(
+                                i,
+                                i + 4000
+                            )
+                        );
+                    }
+
+                } catch (e) {
+
+                    console.error(
+                        "AI ERROR:",
+                        e.message
+                    );
+
+                    await bot.sendMessage(
+
+                        msg.chat.id,
+
+                        "❌ Ошибка ИИ, сэр. " +
+                        "Проверьте AI_API_KEY и логи Railway."
+                    );
+                }
 
                 return;
             }
@@ -1579,7 +1868,7 @@ setAdminOffline(
 
                     "📧 Введите вашу почту:\n\n" +
 
-"Например:\n" +
+                    "Например:\n" +
                     "example@gmail.com"
                 );
 
@@ -1640,21 +1929,21 @@ setAdminOffline(
 
                     "🧾 ЗАКАЗ СОЗДАН\n\n" +
 
-                    № Заказа: ${orderId}\n\n +
+                    `№ Заказа: ${orderId}\n\n` +
 
-                    👤 Имя: ${state.name}\n +
+                    `👤 Имя: ${state.name}\n` +
 
-                    📧 Почта: ${email}\n\n +
+                    `📧 Почта: ${email}\n\n` +
 
-                    📦 Тариф: ${tariff.name}\n +
+                    `📦 Тариф: ${tariff.name}\n` +
 
-                    💰 Сумма: ${tariff.price} ₽\n\n +
+                    `💰 Сумма: ${tariff.price} ₽\n\n` +
 
                     "💳 Реквизиты для оплаты:\n\n" +
 
-                    Карта:\n${CARD_NUMBER}\n\n +
+                    `Карта:\n${CARD_NUMBER}\n\n` +
 
-                    ${CARD_HOLDER}\n\n +
+                    `${CARD_HOLDER}\n\n` +
 
                     "⚠️ После оплаты нажмите " +
                     "«📷 Я оплатил» и отправьте чек.",
@@ -1669,7 +1958,7 @@ setAdminOffline(
                                     {
                                         text: "📷 Я оплатил",
                                         callback_data:
-                                            paid_${orderId}
+                                            `paid_${orderId}`
                                     }
                                 ],
 
@@ -1721,6 +2010,127 @@ bot.on(
                 query.from.id;
 
             // ==================================================
+            // ИИ ДЛЯ АДМИНОВ
+            // ==================================================
+
+            if (
+                data === "back"
+            ) {
+
+                aiMode.delete(
+                    userId
+                );
+            }
+
+            if (
+                data === "admin_ai"
+            ) {
+
+                if (
+                    !isAdmin(userId)
+                ) {
+
+                    await bot.answerCallbackQuery(
+
+                        query.id,
+
+                        {
+                            text: "Нет доступа",
+                            show_alert: true
+                        }
+                    );
+
+                    return;
+                }
+
+                adminWaitingTime.delete(
+                    userId
+                );
+
+                aiMode.add(
+                    userId
+                );
+
+                await bot.answerCallbackQuery(
+                    query.id
+                );
+
+                await bot.sendMessage(
+
+                    chatId,
+
+                    "🤖 ИИ для админов включён.\n\n" +
+
+                    "Пишите вопрос обычным сообщением, сэр.",
+
+                    aiMenu()
+                );
+
+                return;
+            }
+
+            if (
+                data === "ai_clear"
+            ) {
+
+                if (
+                    !isAdmin(userId)
+                ) {
+                    return;
+                }
+
+                aiHistory.delete(
+                    userId
+                );
+
+                await bot.answerCallbackQuery(
+
+                    query.id,
+
+                    {
+                        text: "Диалог очищен 🧹"
+                    }
+                );
+
+                return;
+            }
+
+            if (
+                data === "ai_off"
+            ) {
+
+                if (
+                    !isAdmin(userId)
+                ) {
+                    return;
+                }
+
+                aiMode.delete(
+                    userId
+                );
+
+                await bot.answerCallbackQuery(
+
+                    query.id,
+
+                    {
+                        text: "ИИ выключен"
+                    }
+                );
+
+                await bot.sendMessage(
+
+                    chatId,
+
+                    "⛔ ИИ выключен.",
+
+                    adminMenu()
+                );
+
+                return;
+            }
+
+            // ==================================================
             // BACK
             // ==================================================
 
@@ -1750,7 +2160,7 @@ bot.on(
 
                     "Выберите действие:",
 
-mainMenu()
+                    mainMenu()
                 );
 
                 return;
@@ -1904,9 +2314,9 @@ mainMenu()
 
                     chatId,
 
-                    📦 Вы выбрали: ${tariff.name}\n\n +
+                    `📦 Вы выбрали: ${tariff.name}\n\n` +
 
-                    💰 Цена: ${tariff.price} ₽\n\n +
+                    `💰 Цена: ${tariff.price} ₽\n\n` +
 
                     "👤 Введите ваше имя:"
                 );
@@ -1925,7 +2335,7 @@ mainMenu()
                 const orderId =
                     data.substring(5);
 
-const order =
+                const order =
                     getOrder(orderId);
 
                 if (!order) {
@@ -1971,17 +2381,17 @@ const order =
 
                     "📷 Отправьте чек оплаты.\n\n" +
 
-                    🧾 Заказ: ${order.order_id}\n\n +
+                    `🧾 Заказ: ${order.order_id}\n\n` +
 
-                    👤 Имя: ${order.name}\n +
+                    `👤 Имя: ${order.name}\n` +
 
-                    📧 Почта: ${order.email}\n\n +
+                    `📧 Почта: ${order.email}\n\n` +
 
-                    📦 Тариф: ${
+                    `📦 Тариф: ${
                         TARIFFS[
                             order.tariff
                         ].name
-                    }\n\n +
+                    }\n\n` +
 
                     "После отправки чек будет " +
                     "передан администратору."
@@ -2084,21 +2494,21 @@ const order =
                     "⏳ Ждите, с вами в скором времени " +
                     "свяжутся.\n\n" +
 
-                    👤 Имя: ${result.order.name}\n +
+                    `👤 Имя: ${result.order.name}\n` +
 
-📧 Почта: ${result.order.email}\n\n +
+                    `📧 Почта: ${result.order.email}\n\n` +
 
-                    📦 Тариф: ${
+                    `📦 Тариф: ${
                         TARIFFS[
                             result.order.tariff
                         ].name
-                    }\n\n +
+                    }\n\n` +
 
                     "📅 Подписка до:\n" +
 
-                    ${result.until.toLocaleString(
+                    `${result.until.toLocaleString(
                         "ru-RU"
-                    )},
+                    )}`,
 
                     mainMenu()
                 );
@@ -2190,9 +2600,9 @@ const order =
                     "Если вы уверены, что оплатили, " +
                     "обратитесь в поддержку:\n\n" +
 
-                    Приложение: ${SUPPORT_APP}\n +
+                    `Приложение: ${SUPPORT_APP}\n` +
 
-                    Бот: ${SUPPORT_BOT},
+                    `Бот: ${SUPPORT_BOT}`,
 
                     mainMenu()
                 );
@@ -2259,7 +2669,7 @@ async function handleReceipt(msg) {
 
             "✅ Чек получен!\n\n" +
 
-            🧾 Заказ: ${order.order_id}\n\n +
+            `🧾 Заказ: ${order.order_id}\n\n` +
 
             "Ожидайте проверки администратора.",
 
@@ -2268,10 +2678,10 @@ async function handleReceipt(msg) {
 
         const username =
             msg.from.username
-                ? @${msg.from.username}
+                ? `@${msg.from.username}`
                 : "нет";
 
-const tariff =
+        const tariff =
             TARIFFS[
                 order.tariff
             ];
@@ -2279,7 +2689,7 @@ const tariff =
         // ==================================================
         // ВАЖНО:
         // Здесь НЕТ parse_mode: Markdown.
-        // Поэтому _ *  и другие символы пользователя
+        // Поэтому _ * ` и другие символы пользователя
         // больше не вызывают ошибку Telegram 400.
         // ==================================================
 
@@ -2287,19 +2697,19 @@ const tariff =
 
             "📩 НОВАЯ ЗАЯВКА\n\n" +
 
-            🧾 Заказ: ${order.order_id}\n\n +
+            `🧾 Заказ: ${order.order_id}\n\n` +
 
-            👤 Имя: ${order.name}\n +
+            `👤 Имя: ${order.name}\n` +
 
-            📧 Почта: ${order.email}\n +
+            `📧 Почта: ${order.email}\n` +
 
-            👤 User ID: ${order.user_id}\n +
+            `👤 User ID: ${order.user_id}\n` +
 
-            👤 Username: ${username}\n\n +
+            `👤 Username: ${username}\n\n` +
 
-            📦 Тариф: ${tariff.name}\n +
+            `📦 Тариф: ${tariff.name}\n` +
 
-            💰 Сумма: ${order.amount} ₽\n\n +
+            `💰 Сумма: ${order.amount} ₽\n\n` +
 
             "💳 Проверьте перевод " +
             "и выберите действие:";
@@ -2338,14 +2748,14 @@ const tariff =
                 );
 
                 console.log(
-                    ✅ Заявка ${order.order_id} отправлена админу ${adminId}
+                    `✅ Заявка ${order.order_id} отправлена админу ${adminId}`
                 );
 
             } catch (error) {
 
                 console.error(
 
-                    ❌ Ошибка отправки админу ${adminId}:`,
+                    `❌ Ошибка отправки админу ${adminId}:`,
 
                     error.message
                 );
@@ -2460,6 +2870,11 @@ console.log(
 console.log(
     "🟢 ONLINE ADMINS:",
     getOnlineAdminsCount()
+);
+
+console.log(
+    "🤖 AI KEY:",
+    AI_API_KEY ? "задан" : "НЕ задан"
 );
 
 console.log(
