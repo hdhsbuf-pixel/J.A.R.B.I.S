@@ -22,8 +22,23 @@ const SUPPORT_APP = "@JARBIS_help1";
 const SUPPORT_BOT = "@sakuraYTST";
 
 // --- ИИ для админов (ключ хранится в Railway -> Variables) ---
-const AI_API_KEY = process.env.AI_API_KEY;
+const AI_KEYS = (process.env.AI_API_KEYS || process.env.AI_API_KEY || "")
+    .split(",")
+    .map(k => k.trim())
+    .filter(Boolean);
+
+const AI_API_KEY = AI_KEYS[0];
 const AI_MODEL = process.env.AI_MODEL || "gemini-3.8-flash";
+
+const AI_MODELS = [
+    AI_MODEL,
+    ...(process.env.AI_FALLBACK_MODELS || "")
+        .split(",")
+        .map(m => m.trim())
+        .filter(Boolean)
+].filter((m, i, a) => a.indexOf(m) === i);
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const CARD_NUMBER =
     process.env.CARD_NUMBER || "2200 1536 2364 5513";
@@ -1069,9 +1084,52 @@ function aiMenu() {
     };
 }
 
+let aiKeyCursor = 0;
+
+async function callGemini(model, history, key) {
+
+    try {
+
+        const res = await fetch(
+
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": key
+                },
+
+                body: JSON.stringify({
+
+                    systemInstruction: {
+                        parts: [{ text: AI_SYSTEM }]
+                    },
+
+                    contents: history
+                })
+            }
+        );
+
+        const data =
+            await res.json().catch(() => ({}));
+
+        return { res, data };
+
+    } catch (e) {
+
+        return {
+            res: { ok: false, status: 0 },
+            data: { error: { message: e.message } }
+        };
+    }
+}
+
 async function askAI(userId, text) {
 
-    if (!AI_API_KEY) {
+    if (!AI_KEYS.length) {
 
         return "❌ временно не работает, сэр.";
     }
@@ -1088,75 +1146,89 @@ async function askAI(userId, text) {
         history.splice(0, 2);
     }
 
-    const res = await fetch(
+    let lastError = "unknown";
 
-        `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`,
+    for (let k = 0; k < AI_KEYS.length; k++) {
 
-        {
-            method: "POST",
+        const keyIndex =
+            (aiKeyCursor + k) % AI_KEYS.length;
 
-            headers: {
-                "Content-Type": "application/json",
-                "x-goog-api-key": AI_API_KEY
-            },
+        const key =
+            AI_KEYS[keyIndex];
 
-            body: JSON.stringify({
+        for (const model of AI_MODELS) {
 
-                systemInstruction: {
-                    parts: [{ text: AI_SYSTEM }]
-                },
+            for (let attempt = 1; attempt <= 2; attempt++) {
 
-                contents: history
-            })
+                const { res, data } =
+                    await callGemini(model, history, key);
+
+                if (res.ok) {
+
+                    const parts =
+                        (data &&
+                            data.candidates &&
+                            data.candidates[0] &&
+                            data.candidates[0].content &&
+                            data.candidates[0].content.parts) ||
+                        [];
+
+                    const answer =
+                        parts
+                            .map(p => p.text || "")
+                            .join("");
+
+                    if (!answer) {
+
+                        history.pop();
+
+                        return "🤔 ИИ не дал ответ, сэр. Переформулируйте вопрос.";
+                    }
+
+                    aiKeyCursor = keyIndex;
+
+                    history.push({
+                        role: "model",
+                        parts: [{ text: answer }]
+                    });
+
+                    aiHistory.set(
+                        userId,
+                        history
+                    );
+
+                    return answer;
+                }
+
+                lastError =
+                    `ключ ${keyIndex + 1}, ${model}: ` +
+                    ((data && data.error && data.error.message) || res.status);
+
+                console.error("AI ERROR:", lastError);
+
+                // перегрузка: подождать и повторить
+                if (
+                    res.status === 503 ||
+                    res.status === 500 ||
+                    res.status === 0
+                ) {
+
+                    if (attempt < 2) {
+                        await sleep(2000);
+                    }
+
+                    continue;
+                }
+
+                // лимит и прочее: сразу следующая модель/ключ
+                break;
+            }
         }
-    );
-
-    const data =
-        await res.json();
-
-    if (!res.ok) {
-
-        history.pop();
-
-        throw new Error(
-            (data &&
-                data.error &&
-                data.error.message) ||
-            `HTTP ${res.status}`
-        );
     }
 
-    const parts =
-        (data &&
-            data.candidates &&
-            data.candidates[0] &&
-            data.candidates[0].content &&
-            data.candidates[0].content.parts) ||
-        [];
+    history.pop();
 
-    const answer =
-        parts
-            .map(p => p.text || "")
-            .join("");
-
-    if (!answer) {
-
-        history.pop();
-
-        return "🤔 ИИ не дал ответ, сэр. Переформулируйте вопрос.";
-    }
-
-    history.push({
-        role: "model",
-        parts: [{ text: answer }]
-    });
-
-    aiHistory.set(
-        userId,
-        history
-    );
-
-    return answer;
+    throw new Error(lastError);
 }
 
 // ============================================================
