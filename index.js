@@ -5,7 +5,8 @@ const fs = require("fs");
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_IDS = [
     8723208814,
-    8882462981
+    8882462981,
+    6152900227
 ];
 const SUPPORT_APP = "@JARBIS_help1";
 const SUPPORT_BOT = "@sakuraYTST";
