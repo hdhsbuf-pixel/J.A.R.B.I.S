@@ -52,7 +52,7 @@ const bot = new TelegramBot(BOT_TOKEN, {
 // КНОПКА ИИ В ГЛАВНОМ МЕНЮ (только для админов)
 // ============================================================
 
-const AI_BUTTON = "🤖 ИИ (временно не работает)";
+const AI_BUTTON = "🤖 ИИ";
 
 const _sendMessage = bot.sendMessage.bind(bot);
 
@@ -970,7 +970,7 @@ function adminMenu() {
 
                 [
                     {
-                        text: "🤖 ИИ для админов (временно не работает)",
+                        text: "🤖 ИИ для админов",
                         callback_data: "admin_ai"
                     }
                 ],
@@ -1807,7 +1807,7 @@ bot.on(
                         msg.chat.id,
 
                         "❌ Ошибка ИИ, сэр. " +
-                        "Проверьте AI_API_KEY и логи Railway."
+                        "Если долго не отвечаю сэр сообщите это в тех.поддержку."
                     );
                 }
 
