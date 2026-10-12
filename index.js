@@ -1,4 +1,4 @@
-const TelegramBot = require("node-telegram-bot-api");
+ const TelegramBot = require("node-telegram-bot-api");
 const Database = require("better-sqlite3");
 const crypto = require("crypto");
 const fs = require("fs");
@@ -1183,7 +1183,7 @@ bot.onText(/^\/start$/, async (msg) => {
         if (isAdmin(userId)) {
             await bot.sendMessage(msg.chat.id, "👨‍💼 Панель администратора\n\n" +
                 `🟢 Администраторов онлайн: ` +
-                `${getOnlineAdminsCount()}/2`, adminMenu());
+                `${getOnlineAdminsCount()}/${ADMIN_IDS.length}`, adminMenu());
         }
     }
     catch (error) {
@@ -1199,7 +1199,7 @@ bot.onText(/^\/admin$/, async (msg) => {
     }
     await bot.sendMessage(msg.chat.id, "👨‍💼 Панель администратора\n\n" +
         `🟢 Администраторов онлайн: ` +
-        `${getOnlineAdminsCount()}/2`, adminMenu());
+        `${getOnlineAdminsCount()}/${ADMIN_IDS.length}`, adminMenu());
 });
 bot.on("message", async (msg) => {
     try {
@@ -1344,9 +1344,25 @@ bot.on("message", async (msg) => {
                 subscription, mainMenu());
             return;
         }
-        const direct = text.match(/^отправь\s+сообщение\s+(@\w{3,})\s*([\s\S]*)$/i);
+        if (isAdmin(userId) && (text === "/users" || text === "/база")) {
+            const total = db.prepare("SELECT COUNT(*) AS c FROM users").get().c;
+            const rows = db.prepare("SELECT user_id, username FROM users ORDER BY rowid DESC LIMIT 30").all();
+            await bot.sendMessage(msg.chat.id, `💾 База: ${DB_FILE}\n` +
+                `🚀 Деплой: ${(process.env.RAILWAY_DEPLOYMENT_ID || "нет данных").slice(0, 8)}, работает ${Math.round(process.uptime() / 60)} мин\n` +
+                (DB_FILE.startsWith("/data")
+                    ? "✅ Хранится на томе, данные не пропадут при перезапуске.\n\n"
+                    : "⚠️ Тома /data нет: база стирается при каждом деплое.\n\n") +
+                `👥 Пользователей: ${total}\n\n` +
+                (rows.length
+                    ? rows.map(r => `${r.username ? "@" + r.username : "без ника"} (${r.user_id})`).join("\n")
+                    : "пока никого"));
+            return;
+        }
+        const direct = text.match(/^(?:отправь|отправить|напиши|написать)(?:\s+сообщение)?\s+(@\w{3,}|\d{5,})\s*([\s\S]*)$/i);
         if (direct) {
-            const targetName = direct[1].slice(1);
+            const ref = direct[1];
+            const byId = /^\d+$/.test(ref);
+            const targetName = byId ? null : ref.slice(1);
             const body = direct[2].trim();
             if (!body) {
                 await bot.sendMessage(msg.chat.id, "✍️ Напишите текст после ника.\n\nНапример:\nОтправь сообщение @ник\nВаш текст");
@@ -1361,9 +1377,16 @@ bot.on("message", async (msg) => {
                 await bot.sendMessage(msg.chat.id, "⏳ Подождите 30 секунд перед следующим сообщением.");
                 return;
             }
-            const target = db.prepare("SELECT user_id, username FROM users WHERE LOWER(username) = LOWER(?)").get(targetName);
+            const target = byId
+                ? (getUser(Number(ref)) || { user_id: Number(ref), username: null })
+                : db.prepare("SELECT user_id, username FROM users WHERE LOWER(username) = LOWER(?)").get(targetName);
             if (!target) {
-                await bot.sendMessage(msg.chat.id, "❌ Пользователь не найден. Он должен хотя бы раз запустить бота.");
+                const similar = db.prepare("SELECT username FROM users WHERE username LIKE ? LIMIT 5").all(`%${targetName.slice(0, 4)}%`);
+                await bot.sendMessage(msg.chat.id, `❌ Пользователь @${targetName} не найден в базе. Он должен хотя бы раз написать боту.` +
+                    (similar.length
+                        ? "\n\nПохожие ники в базе: " + similar.map(r => "@" + r.username).join(", ")
+                        : ""));
+                console.log("DIRECT: не найден ник", targetName);
                 return;
             }
             if (target.user_id === userId) {
@@ -1382,10 +1405,10 @@ bot.on("message", async (msg) => {
                     `Вам ${senderTag} отправил сообщение:\n\n` +
                     body);
                 lastDirectMsg.set(userId, Date.now());
-                await bot.sendMessage(msg.chat.id, `✅ Сообщение отправлено @${target.username}.`);
+                await bot.sendMessage(msg.chat.id, `✅ Сообщение отправлено ${target.username ? "@" + target.username : "ID " + target.user_id}.`);
             }
             catch (e) {
-                await bot.sendMessage(msg.chat.id, "❌ Не удалось отправить: пользователь заблокировал бота или не запускал его.");
+                await bot.sendMessage(msg.chat.id, "❌ Не удалось отправить: пользователь не запускал бота или заблокировал его.");
             }
             return;
         }
