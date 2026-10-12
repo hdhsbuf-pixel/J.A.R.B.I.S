@@ -660,6 +660,21 @@ function getBotStats() {
         "Если данных для ответа нет, так и скажи. " +
         "Никогда не выдумывай цифры, серверы и платёжные шлюзы.");
 }
+const lastDirectMsg = new Map();
+async function getDisplayName(uid, username) {
+    const row = getUser(uid);
+    if (row && row.name) {
+        return row.name;
+    }
+    try {
+        const chat = await bot.getChat(uid);
+        if (chat && chat.first_name) {
+            return chat.first_name;
+        }
+    }
+    catch (_) { }
+    return username ? "@" + username : String(uid);
+}
 const aiControl = new Set();
 const aiManualOff = new Set();
 const aiActions = new Map();
@@ -1327,6 +1342,51 @@ bot.on("message", async (msg) => {
                 `📧 Почта: ${user.email || "не указана"}\n\n` +
                 `💰 Всего оплачено: ${user.total_paid || 0} ₽\n\n` +
                 subscription, mainMenu());
+            return;
+        }
+        const direct = text.match(/^отправь\s+сообщение\s+(@\w{3,})\s*([\s\S]*)$/i);
+        if (direct) {
+            const targetName = direct[1].slice(1);
+            const body = direct[2].trim();
+            if (!body) {
+                await bot.sendMessage(msg.chat.id, "✍️ Напишите текст после ника.\n\nНапример:\nОтправь сообщение @ник\nВаш текст");
+                return;
+            }
+            if (body.length > 1000) {
+                await bot.sendMessage(msg.chat.id, "❌ Сообщение длиннее 1000 символов.");
+                return;
+            }
+            const last = lastDirectMsg.get(userId) || 0;
+            if (Date.now() - last < 30000) {
+                await bot.sendMessage(msg.chat.id, "⏳ Подождите 30 секунд перед следующим сообщением.");
+                return;
+            }
+            const target = db.prepare("SELECT user_id, username FROM users WHERE LOWER(username) = LOWER(?)").get(targetName);
+            if (!target) {
+                await bot.sendMessage(msg.chat.id, "❌ Пользователь не найден. Он должен хотя бы раз запустить бота.");
+                return;
+            }
+            if (target.user_id === userId) {
+                await bot.sendMessage(msg.chat.id, "❌ Нельзя отправить сообщение самому себе.");
+                return;
+            }
+            const senderTag = msg.from.username
+                ? "@" + msg.from.username
+                : `${msg.from.first_name || "Пользователь"} (ID ${userId})`;
+            const targetDisplay = await getDisplayName(target.user_id, target.username);
+            const greeting = isAdmin(target.user_id)
+                ? `Здравствуйте администратор ${targetDisplay}`
+                : `Здравствуйте ${targetDisplay}`;
+            try {
+                await bot.sendMessage(target.user_id, `${greeting}\n` +
+                    `Вам ${senderTag} отправил сообщение:\n\n` +
+                    body);
+                lastDirectMsg.set(userId, Date.now());
+                await bot.sendMessage(msg.chat.id, `✅ Сообщение отправлено @${target.username}.`);
+            }
+            catch (e) {
+                await bot.sendMessage(msg.chat.id, "❌ Не удалось отправить: пользователь заблокировал бота или не запускал его.");
+            }
             return;
         }
         const takeover = isAdmin(userId) &&
