@@ -1,4 +1,4 @@
- const TelegramBot = require("node-telegram-bot-api");
+const TelegramBot = require("node-telegram-bot-api");
 const Database = require("better-sqlite3");
 const crypto = require("crypto");
 const fs = require("fs");
@@ -1227,6 +1227,41 @@ bot.on("message", async (msg) => {
         }
         if (text === "/том холланд") {
             await bot.sendMessage(msg.chat.id, "Том холланд работает спойлерщиком");
+            return;
+        }
+        if (text.toLowerCase() === "/подписки" || text.toLowerCase() === "/subs") {
+            if (!isAdmin(userId)) {
+                await bot.sendMessage(msg.chat.id, "⛔ Эта команда только для администраторов.");
+                return;
+            }
+            const nowIso = new Date().toISOString();
+            const tag = r => `${r.username ? "@" + r.username : "без ника"} (${r.user_id})`;
+            const section = (title, rows, line) => {
+                const shown = rows.slice(0, 40).map(line);
+                if (rows.length > 40) {
+                    shown.push(`…и ещё ${rows.length - 40}`);
+                }
+                return `${title} (${rows.length}):\n` + (shown.length ? shown.join("\n") : "никого");
+            };
+            const active = db.prepare("SELECT user_id, username, sub_until, total_paid FROM users WHERE sub_until > ? ORDER BY sub_until DESC").all(nowIso);
+            const expired = db.prepare("SELECT user_id, username, sub_until, total_paid FROM users WHERE sub_until IS NOT NULL AND sub_until <= ? ORDER BY sub_until DESC").all(nowIso);
+            const never = db.prepare("SELECT user_id, username FROM users WHERE sub_until IS NULL ORDER BY rowid DESC").all()
+                .filter(r => !isAdmin(r.user_id));
+            const report = "📊 Подписки\n\n" +
+                section("✅ Купили, подписка активна", active, r => `${tag(r)} — до ${new Date(r.sub_until).toLocaleDateString("ru-RU")}, оплачено ${r.total_paid || 0} ₽`) + "\n\n" +
+                section("⌛ Подписка закончилась", expired, r => `${tag(r)} — была до ${new Date(r.sub_until).toLocaleDateString("ru-RU")}`) + "\n\n" +
+                section("❌ Не покупали", never, tag);
+            for (let i = 0; i < report.length; i += 4000) {
+                await bot.sendMessage(msg.chat.id, report.slice(i, i + 4000));
+            }
+            return;
+        }
+        const idLookup = text.match(/^\/id\s+@(\w{3,})$/i);
+        if (idLookup) {
+            const found = db.prepare("SELECT user_id, username FROM users WHERE LOWER(username) = LOWER(?)").get(idLookup[1]);
+            await bot.sendMessage(msg.chat.id, found
+                ? `🆔 ID пользователя @${found.username}:\n\n${found.user_id}`
+                : `❌ @${idLookup[1]} не найден в базе. Он должен хотя бы раз написать боту.`, mainMenu());
             return;
         }
         if (text === "/start" ||
