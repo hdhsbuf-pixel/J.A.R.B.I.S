@@ -8,7 +8,7 @@ const ADMIN_IDS = [
     8882462981,
     6152900227
 ];
-const SUPPORT_APP = "@JARBIS_help1";
+const SUPPORT_APP = "@JARBIS_kod";
 const SUPPORT_BOT = "@sakuraYTST";
 const AI_KEYS = (process.env.AI_API_KEYS || process.env.AI_API_KEY || "")
     .split(",")
