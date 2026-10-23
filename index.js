@@ -9,7 +9,7 @@ const ADMIN_IDS = [
     6152900227
 ];
 const SUPPORT_APP = "@JARBIS_kod";
-const SUPPORT_BOT = "@sakuraYTST";
+const SUPPORT_BOT = "@JARBIS_Team";
 const AI_KEYS = (process.env.AI_API_KEYS || process.env.AI_API_KEY || "")
     .split(",")
     .map(k => k.trim())
@@ -62,7 +62,8 @@ bot.sendMessage = (chatId, text, options = {}) => {
     return _sendMessage(chatId, text, options);
 };
 const DB_FILE = fs.existsSync("/data")
-    ? "/data/subscriptions.db"
+    ? "/data
+    /subscriptions.db"
     : "./subscriptions.db";
 const db = new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
