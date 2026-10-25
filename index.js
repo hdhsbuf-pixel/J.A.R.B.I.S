@@ -2,6 +2,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const Database = require("better-sqlite3");
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_IDS = [
     8723208814,
@@ -9,7 +11,7 @@ const ADMIN_IDS = [
     6152900227
 ];
 const SUPPORT_APP = "@JARBIS_kod";
-const SUPPORT_BOT = "@JARBIS_Team";
+const SUPPORT_BOT = "@KIRA_Team";
 const AI_KEYS = (process.env.AI_API_KEYS || process.env.AI_API_KEY || "")
     .split(",")
     .map(k => k.trim())
@@ -18,7 +20,7 @@ const AI_API_KEY = AI_KEYS[0];
 const AI_MODEL = process.env.AI_MODEL || "gemini-3.8-flash";
 const AI_MODELS = [
     AI_MODEL,
-    ...(process.env.AI_FALLBACK_MODELS || "")
+    ...(process.env.AI_FALLBACK_MODELS ?? "gemini-3.6-flash,gemini-3.5-flash-lite")
         .split(",")
         .map(m => m.trim())
         .filter(Boolean)
@@ -62,8 +64,7 @@ bot.sendMessage = (chatId, text, options = {}) => {
     return _sendMessage(chatId, text, options);
 };
 const DB_FILE = fs.existsSync("/data")
-    ? "/data
-    /subscriptions.db"
+    ? "/data/subscriptions.db"
     : "./subscriptions.db";
 const db = new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
@@ -107,6 +108,20 @@ function initDb() {
             online INTEGER DEFAULT 1,
             offline_until TEXT
         );
+        CREATE TABLE IF NOT EXISTS blocks (
+            blocker_id INTEGER NOT NULL,
+            blocked_id INTEGER NOT NULL,
+            PRIMARY KEY (blocker_id, blocked_id)
+        );
+        CREATE TABLE IF NOT EXISTS order_msgs (
+            order_id TEXT NOT NULL,
+            admin_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
     `);
     addColumn("users", "username", "TEXT");
     addColumn("users", "name", "TEXT");
@@ -115,6 +130,8 @@ function initDb() {
     addColumn("users", "total_paid", "INTEGER DEFAULT 0");
     addColumn("payments", "name", "TEXT");
     addColumn("payments", "email", "TEXT");
+    addColumn("users", "reminded_3", "TEXT");
+    addColumn("users", "reminded_1", "TEXT");
     for (const adminId of ADMIN_IDS) {
         db.prepare(`
             INSERT OR IGNORE INTO admins
@@ -128,6 +145,211 @@ function initDb() {
     }
 }
 initDb();
+function getMeta(key) {
+    const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key);
+    return row ? row.value : null;
+}
+function setMeta(key, value) {
+    db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+}
+function userTag(id) {
+    const row = getUser(id);
+    return `${row && row.username ? "@" + row.username : "без ника"} (${id})`;
+}
+function fmtDate(iso) {
+    return new Date(iso).toLocaleDateString("ru-RU");
+}
+async function notifyAdmins(text) {
+    for (const id of ADMIN_IDS) {
+        try {
+            await bot.sendMessage(id, text);
+        }
+        catch (_) { }
+    }
+}
+const errorSeen = new Map();
+function reportError(where, error) {
+    console.error(where + ":", error);
+    const body = String((error && (error.stack || error.message)) || error).slice(0, 600);
+    const key = where + body.slice(0, 120);
+    const now = Date.now();
+    if (now - (errorSeen.get(key) || 0) < 300000) {
+        return;
+    }
+    errorSeen.set(key, now);
+    notifyAdmins(`🚨 Ошибка бота\n\n📍 ${where}\n${body}`).catch(() => { });
+}
+function orderAdminText(order) {
+    const buyer = getUser(order.user_id);
+    const tariff = TARIFFS[order.tariff];
+    return "📩 НОВАЯ ЗАЯВКА\n\n" +
+        `🧾 Заказ: ${order.order_id}\n\n` +
+        `👤 Имя: ${order.name}\n` +
+        `📧 Почта: ${order.email}\n` +
+        `👤 User ID: ${order.user_id}\n` +
+        `👤 Username: ${buyer && buyer.username ? "@" + buyer.username : "нет"}\n\n` +
+        `📦 Тариф: ${tariff ? tariff.name : order.tariff}\n` +
+        `💰 Сумма: ${order.amount} ₽\n\n` +
+        "💳 Проверьте перевод " +
+        "и выберите действие:";
+}
+async function markOrderHandled(orderId, actorId, kind) {
+    try {
+        const order = getOrder(orderId);
+        if (!order) {
+            return;
+        }
+        const actor = getUser(actorId);
+        const actorTag = actor && actor.username ? "@" + actor.username : `ID ${actorId}`;
+        const verdict = kind === "confirm" ? "оплата подтверждена" : "заказ отклонён";
+        const rows = db.prepare("SELECT admin_id, message_id FROM order_msgs WHERE order_id = ?").all(orderId);
+        for (const r of rows) {
+            try {
+                await bot.editMessageText(orderAdminText(order) + `\n\n✅ Обработал ${actorTag} — ${verdict}`, {
+                    chat_id: r.admin_id,
+                    message_id: r.message_id,
+                    reply_markup: { inline_keyboard: [] }
+                });
+            }
+            catch (_) { }
+        }
+        db.prepare("DELETE FROM order_msgs WHERE order_id = ?").run(orderId);
+    }
+    catch (e) {
+        console.error("markOrderHandled:", e.message);
+    }
+}
+async function sendBackup(targets, reason) {
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+    const file = path.join(os.tmpdir(), `jarbis-backup-${stamp}.db`);
+    try {
+        await db.backup(file);
+        const total = db.prepare("SELECT COUNT(*) AS c FROM users").get().c;
+        for (const id of targets) {
+            try {
+                await bot.sendDocument(id, file, {
+                    caption: `💾 Копия базы (${reason})\n👥 Пользователей: ${total}\n🕐 ${new Date().toLocaleString("ru-RU")}`
+                }, {
+                    filename: `jarbis-${stamp}.db`,
+                    contentType: "application/octet-stream"
+                });
+            }
+            catch (e) {
+                console.error("BACKUP SEND:", id, e.message);
+            }
+        }
+        setMeta("last_backup", new Date().toISOString());
+    }
+    finally {
+        try {
+            fs.unlinkSync(file);
+        }
+        catch (_) { }
+    }
+}
+async function backupTick() {
+    const last = getMeta("last_backup");
+    if (last && Date.now() - new Date(last).getTime() < 86400000) {
+        return;
+    }
+    await sendBackup(ADMIN_IDS, "ежедневная");
+}
+async function runReminders() {
+    const now = Date.now();
+    const rows = db.prepare("SELECT user_id, sub_until, reminded_3, reminded_1 FROM users WHERE sub_until > ? AND sub_until <= ?").all(new Date(now).toISOString(), new Date(now + 72 * 3600000).toISOString());
+    for (const r of rows) {
+        const left = new Date(r.sub_until).getTime() - now;
+        const oneDay = left <= 86400000;
+        if (oneDay ? r.reminded_1 === r.sub_until : r.reminded_3 === r.sub_until) {
+            continue;
+        }
+        if (oneDay) {
+            db.prepare("UPDATE users SET reminded_1 = ?, reminded_3 = ? WHERE user_id = ?").run(r.sub_until, r.sub_until, r.user_id);
+        }
+        else {
+            db.prepare("UPDATE users SET reminded_3 = ? WHERE user_id = ?").run(r.sub_until, r.user_id);
+            const lastPaid = db.prepare("SELECT tariff FROM payments WHERE user_id = ? AND status = 'paid' ORDER BY paid_at DESC LIMIT 1").get(r.user_id);
+            if (lastPaid && TARIFFS[lastPaid.tariff] && TARIFFS[lastPaid.tariff].days <= 3) {
+                continue;
+            }
+        }
+        const days = Math.ceil(left / 86400000);
+        try {
+            await bot.sendMessage(r.user_id, (oneDay
+                ? "⏰ Ваша подписка закончится меньше чем через сутки."
+                : `⏰ Ваша подписка закончится через ${days} дн.`) +
+                `\n\n📅 До: ${new Date(r.sub_until).toLocaleString("ru-RU")}\n\n` +
+                "Чтобы не потерять доступ, продлите подписку заранее.", {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            {
+                                text: "🔄 Продлить",
+                                callback_data: "renew"
+                            }
+                        ]
+                    ]
+                }
+            });
+        }
+        catch (_) { }
+    }
+}
+function userCardText(row) {
+    let sub = "❌ подписки не было";
+    if (row.sub_until) {
+        sub = new Date(row.sub_until) > new Date()
+            ? `✅ активна до ${fmtDate(row.sub_until)}`
+            : `⌛ закончилась ${fmtDate(row.sub_until)}`;
+    }
+    const orders = db.prepare("SELECT order_id, tariff, amount, status, created_at FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 5").all(row.user_id);
+    const statusText = {
+        paid: "✅ оплачен",
+        pending: "⏳ ждёт проверки",
+        rejected: "❌ отклонён"
+    };
+    return "👤 Карточка пользователя\n\n" +
+        `🆔 ID: ${row.user_id}\n` +
+        `👤 Ник: ${row.username ? "@" + row.username : "не указан"}\n` +
+        `📛 Имя: ${row.name || "не указано"}\n` +
+        `📧 Почта: ${row.email || "не указана"}\n\n` +
+        `📅 Подписка: ${sub}\n` +
+        `💰 Оплачено всего: ${row.total_paid || 0} ₽\n\n` +
+        "📦 Заказы:\n" +
+        (orders.length
+            ? orders.map(o => `№${o.order_id} — ${TARIFFS[o.tariff] ? TARIFFS[o.tariff].name : o.tariff}, ${o.amount} ₽, ${statusText[o.status] || o.status}, ${fmtDate(o.created_at)}`).join("\n")
+            : "заказов нет");
+}
+function userCardButtons(uid) {
+    return {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: "🎁 Выдать подписку",
+                        callback_data: `ugive_${uid}`
+                    }
+                ],
+                [
+                    {
+                        text: "🚫 Забрать подписку",
+                        callback_data: `utake_${uid}`
+                    }
+                ]
+            ]
+        }
+    };
+}
+async function startupNotice() {
+    const total = db.prepare("SELECT COUNT(*) AS c FROM users").get().c;
+    await notifyAdmins("🟢 Бот запущен\n\n" +
+        `👥 Пользователей в базе: ${total}\n` +
+        `💾 База: ${DB_FILE}\n` +
+        (DB_FILE.startsWith("/data")
+            ? "✅ Том подключён: данные сохраняются.\n"
+            : "⚠️ Тома нет: база сотрётся при следующем деплое.\n") +
+        `🚀 Деплой: ${(process.env.RAILWAY_DEPLOYMENT_ID || "нет данных").slice(0, 8)}`);
+}
 function upsertUser(userId, username = null) {
     db.prepare(`
         INSERT OR IGNORE INTO users
@@ -599,7 +821,7 @@ const userStates = new Map();
 const adminWaitingTime = new Set();
 const aiMode = new Set();
 const aiHistory = new Map();
-const AI_SYSTEM = "Ты J.A.R.B.I.S — ИИ-помощник администраторов бота подписок. " +
+const AI_SYSTEM = "Ты Кира — ИИ-помощник администраторов бота подписок J.A.R.B.I.S. " +
     "Обращайся «сэр». Отвечай по-русски, кратко и по делу.";
 function aiMenu() {
     return {
@@ -913,6 +1135,7 @@ async function runAiAction(action) {
                 `${result.until.toLocaleString("ru-RU")}`, mainMenu());
         }
         catch (_) { }
+        await markOrderHandled(String(a.order_id), action.adminId, "confirm");
         return `✅ Заказ ${a.order_id} подтверждён.`;
     }
     if (action.name === "reject_order") {
@@ -928,6 +1151,7 @@ async function runAiAction(action) {
                 `Бот: ${SUPPORT_BOT}`, mainMenu());
         }
         catch (_) { }
+        await markOrderHandled(String(a.order_id), action.adminId, "reject");
         return `❌ Заказ ${a.order_id} отклонён.`;
     }
     if (action.name === "give_subscription") {
@@ -1033,6 +1257,7 @@ async function callGemini(model, contents, key, system, useTools, timeoutMs) {
     }
 }
 const aiKeyBadUntil = [];
+const aiModelBadUntil = {};
 function markKeyBad(index, status, message) {
     let ms = 0;
     if (status === 429) {
@@ -1054,14 +1279,18 @@ function markKeyBad(index, status, message) {
 }
 async function generate(contents, system, useTools, deadline) {
     let lastError = "unknown";
-    let order = AI_KEYS.map((_, i) => i);
-    const fresh = order.filter(i => !(aiKeyBadUntil[i] > Date.now()));
-    if (fresh.length) {
-        order = fresh;
+    let models = AI_MODELS.filter(m => !(aiModelBadUntil[m] > Date.now()));
+    if (!models.length) {
+        models = AI_MODELS;
     }
-    for (const keyIndex of order) {
-        const key = AI_KEYS[keyIndex];
-        for (const model of AI_MODELS) {
+    for (const model of models) {
+        let order = AI_KEYS.map((_, i) => i);
+        const fresh = order.filter(i => !(aiKeyBadUntil[i] > Date.now()));
+        if (fresh.length) {
+            order = fresh;
+        }
+        let overloaded = 0;
+        for (const keyIndex of order) {
             const left = deadline - Date.now();
             if (left < 1000) {
                 throw new Error("таймаут 10 сек, последняя ошибка: " + lastError);
@@ -1069,16 +1298,30 @@ async function generate(contents, system, useTools, deadline) {
             const timeout = AI_KEYS.length > 1
                 ? Math.min(left, 4000)
                 : left;
-            const { res, data } = await callGemini(model, contents, key, system, useTools, timeout);
+            const { res, data } = await callGemini(model, contents, AI_KEYS[keyIndex], system, useTools, timeout);
             if (res.ok) {
                 aiKeyBadUntil[keyIndex] = 0;
+                aiModelBadUntil[model] = 0;
                 return data;
             }
             const message = data && data.error && data.error.message;
             lastError =
                 `ключ ${keyIndex + 1}, ${model}: ` +
                     (message || res.status);
-            console.error("AI ERROR:", lastError, "→ переход на следующий ключ");
+            console.error("AI ERROR:", lastError);
+            if (res.status === 404) {
+                aiModelBadUntil[model] = Date.now() + 600000;
+                break;
+            }
+            if (res.status === 503 || /high demand|overloaded/i.test(message || "")) {
+                overloaded++;
+                if (overloaded >= 3) {
+                    aiModelBadUntil[model] = Date.now() + 30000;
+                    console.error("AI: модель перегружена, перехожу на запасную:", model);
+                    break;
+                }
+                continue;
+            }
             markKeyBad(keyIndex, res.status, message);
         }
     }
@@ -1211,7 +1454,7 @@ bot.on("message", async (msg) => {
         const userId = msg.from.id;
         upsertUser(userId, msg.from.username || null);
         if (text === "/как ты") {
-            await bot.sendMessage(msg.chat.id, "J.A.R.B.I.S: В полном порядке, сэр. " +
+            await bot.sendMessage(msg.chat.id, "Кира: В полном порядке, сэр. " +
                 "Я функционирую нормально, но в конце фраз " +
                 "могу выдавать белиберду...");
             return;
@@ -1255,6 +1498,42 @@ bot.on("message", async (msg) => {
             for (let i = 0; i < report.length; i += 4000) {
                 await bot.sendMessage(msg.chat.id, report.slice(i, i + 4000));
             }
+            return;
+        }
+        const card = text.match(/^\/(?:юзер|user)\s+(@\w{3,}|\d{5,})$/i);
+        if (card) {
+            if (!isAdmin(userId)) {
+                await bot.sendMessage(msg.chat.id, "⛔ Эта команда только для администраторов.");
+                return;
+            }
+            const ref = card[1];
+            const row = /^\d+$/.test(ref)
+                ? getUser(Number(ref))
+                : db.prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?)").get(ref.slice(1));
+            if (!row) {
+                await bot.sendMessage(msg.chat.id, "❌ Пользователь не найден в базе.");
+                return;
+            }
+            await bot.sendMessage(msg.chat.id, userCardText(row), userCardButtons(row.user_id));
+            return;
+        }
+        if (isAdmin(userId) && (text.toLowerCase() === "/backup" || text.toLowerCase() === "/копия")) {
+            await bot.sendMessage(msg.chat.id, "💾 Готовлю копию базы...");
+            await sendBackup([userId], "по запросу");
+            return;
+        }
+        const unban = isAdmin(userId) && text.match(/^разбан\s+(\d{5,}|@\w{3,})$/i);
+        if (unban) {
+            const ref = unban[1];
+            const row = /^\d+$/.test(ref)
+                ? { user_id: Number(ref) }
+                : db.prepare("SELECT user_id FROM users WHERE LOWER(username) = LOWER(?)").get(ref.slice(1));
+            if (!row) {
+                await bot.sendMessage(msg.chat.id, "❌ Пользователь не найден в базе.");
+                return;
+            }
+            db.prepare("DELETE FROM blocks WHERE blocker_id = 0 AND blocked_id = ?").run(row.user_id);
+            await bot.sendMessage(msg.chat.id, `🔊 Запрет снят: ${userTag(row.user_id)}.`);
             return;
         }
         const idLookup = text.match(/^\/id\s+@(\w{3,})$/i);
@@ -1429,6 +1708,13 @@ bot.on("message", async (msg) => {
                 await bot.sendMessage(msg.chat.id, "❌ Нельзя отправить сообщение самому себе.");
                 return;
             }
+            if (!isAdmin(userId)) {
+                const isBlocked = db.prepare("SELECT 1 FROM blocks WHERE blocked_id = ? AND (blocker_id = ? OR blocker_id = 0)").get(userId, target.user_id);
+                if (isBlocked) {
+                    await bot.sendMessage(msg.chat.id, "❌ Этот пользователь не принимает ваши сообщения.");
+                    return;
+                }
+            }
             const senderTag = msg.from.username
                 ? "@" + msg.from.username
                 : `${msg.from.first_name || "Пользователь"} (ID ${userId})`;
@@ -1437,9 +1723,32 @@ bot.on("message", async (msg) => {
                 ? `Здравствуйте администратор ${targetDisplay}`
                 : `Здравствуйте ${targetDisplay}`;
             try {
+                const fromAdmin = isAdmin(userId);
                 await bot.sendMessage(target.user_id, `${greeting}\n` +
                     `Вам ${senderTag} отправил сообщение:\n\n` +
-                    body);
+                    body +
+                    (fromAdmin
+                        ? ""
+                        : "\n\n⚠️ Это сообщение написал пользователь, а не администрация. Не переводите деньги и не присылайте данные карты по просьбе в личных сообщениях."), fromAdmin
+                    ? {}
+                    : {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    {
+                                        text: "🚫 Заблокировать отправителя",
+                                        callback_data: `blk_${userId}`
+                                    }
+                                ],
+                                [
+                                    {
+                                        text: "⚠️ Пожаловаться админам",
+                                        callback_data: `rep_${userId}`
+                                    }
+                                ]
+                            ]
+                        }
+                    });
                 lastDirectMsg.set(userId, Date.now());
                 await bot.sendMessage(msg.chat.id, `✅ Сообщение отправлено ${target.username ? "@" + target.username : "ID " + target.user_id}.`);
             }
@@ -1587,7 +1896,7 @@ bot.on("message", async (msg) => {
         }
     }
     catch (error) {
-        console.error("MESSAGE ERROR:", error);
+        reportError("MESSAGE ERROR", error);
     }
 });
 bot.on("callback_query", async (query) => {
@@ -1723,6 +2032,206 @@ bot.on("callback_query", async (query) => {
                 "⚠️ Максимум — 15 дней.");
             return;
         }
+        if (/^(ugive_|ugd_|utake_|utakeok_|ucard_|ucancel|gban_)/.test(data) && !isAdmin(userId)) {
+            await bot.answerCallbackQuery(query.id, {
+                text: "Нет доступа",
+                show_alert: true
+            });
+            return;
+        }
+        const dropButtons = async () => {
+            try {
+                await bot.editMessageReplyMarkup({
+                    inline_keyboard: []
+                }, {
+                    chat_id: chatId,
+                    message_id: messageId
+                });
+            }
+            catch (_) { }
+        };
+        if (data === "renew") {
+            await bot.answerCallbackQuery(query.id);
+            await bot.sendMessage(chatId, "🛒 Выберите тариф для продления:", buyMenu());
+            return;
+        }
+        if (data.startsWith("blk_")) {
+            const senderId = Number(data.substring(4));
+            if (!Number.isInteger(senderId) || senderId <= 0) {
+                await bot.answerCallbackQuery(query.id);
+                return;
+            }
+            db.prepare("INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (?, ?)").run(userId, senderId);
+            await bot.answerCallbackQuery(query.id, {
+                text: "Отправитель заблокирован 🚫"
+            });
+            await dropButtons();
+            await bot.sendMessage(chatId, "🚫 Отправитель заблокирован. Он больше не сможет писать вам через бота.");
+            return;
+        }
+        if (data.startsWith("rep_")) {
+            const senderId = Number(data.substring(4));
+            if (!Number.isInteger(senderId) || senderId <= 0) {
+                await bot.answerCallbackQuery(query.id);
+                return;
+            }
+            const original = String(query.message.text || "")
+                .split("\n\n⚠️ Это сообщение написал")[0]
+                .slice(0, 1500);
+            for (const adminId of ADMIN_IDS) {
+                try {
+                    await bot.sendMessage(adminId, "⚠️ ЖАЛОБА НА СООБЩЕНИЕ\n\n" +
+                        `👤 Отправитель: ${userTag(senderId)}\n` +
+                        `🙋 Пожаловался: ${userTag(userId)}\n\n` +
+                        `📝 Текст:\n${original}`, {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    {
+                                        text: "🔇 Запретить ему писать через бота",
+                                        callback_data: `gban_${senderId}`
+                                    }
+                                ]
+                            ]
+                        }
+                    });
+                }
+                catch (_) { }
+            }
+            await bot.answerCallbackQuery(query.id, {
+                text: "Жалоба отправлена админам ⚠️"
+            });
+            try {
+                await bot.editMessageReplyMarkup({
+                    inline_keyboard: [
+                        [
+                            {
+                                text: "🚫 Заблокировать отправителя",
+                                callback_data: `blk_${senderId}`
+                            }
+                        ]
+                    ]
+                }, {
+                    chat_id: chatId,
+                    message_id: messageId
+                });
+            }
+            catch (_) { }
+            return;
+        }
+        if (data.startsWith("gban_")) {
+            const senderId = Number(data.substring(5));
+            db.prepare("INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (0, ?)").run(senderId);
+            await bot.answerCallbackQuery(query.id, {
+                text: "Запрещено 🔇"
+            });
+            await dropButtons();
+            await bot.sendMessage(chatId, `🔇 ${userTag(senderId)} больше не может писать через бота.\n\nСнять запрет: «разбан ${senderId}»`);
+            return;
+        }
+        if (data.startsWith("ucard_")) {
+            const row = getUser(Number(data.substring(6)));
+            await bot.answerCallbackQuery(query.id);
+            if (row) {
+                await bot.sendMessage(chatId, userCardText(row), userCardButtons(row.user_id));
+            }
+            return;
+        }
+        if (data.startsWith("ugive_")) {
+            const uid = Number(data.substring(6));
+            await bot.answerCallbackQuery(query.id);
+            await bot.sendMessage(chatId, `🎁 На сколько дней выдать подписку?\n\n${userTag(uid)}`, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "3 дня", callback_data: `ugd_${uid}_3` },
+                            { text: "30 дней", callback_data: `ugd_${uid}_30` }
+                        ],
+                        [
+                            { text: "90 дней", callback_data: `ugd_${uid}_90` },
+                            { text: "180 дней", callback_data: `ugd_${uid}_180` }
+                        ],
+                        [
+                            { text: "365 дней", callback_data: `ugd_${uid}_365` }
+                        ],
+                        [
+                            { text: "❌ Отмена", callback_data: "ucancel" }
+                        ]
+                    ]
+                }
+            });
+            return;
+        }
+        if (data.startsWith("ugd_")) {
+            const parts = data.split("_");
+            const uid = Number(parts[1]);
+            const days = Number(parts[2]);
+            if (!Number.isInteger(uid) || uid <= 0 || ![3, 30, 90, 180, 365].includes(days)) {
+                await bot.answerCallbackQuery(query.id, {
+                    text: "Неверные данные",
+                    show_alert: true
+                });
+                return;
+            }
+            upsertUser(uid);
+            const until = setSubscription(uid, days);
+            console.log(`ADMIN ${userId} выдал подписку ${uid} на ${days} дн.`);
+            try {
+                await bot.sendMessage(uid, `🎁 Администратор выдал вам подписку на ${days} дн.\n\n` +
+                    "📅 Подписка до:\n" +
+                    `${until.toLocaleString("ru-RU")}`, mainMenu());
+            }
+            catch (_) { }
+            await bot.answerCallbackQuery(query.id, {
+                text: "Подписка выдана 🎁"
+            });
+            await dropButtons();
+            await bot.sendMessage(chatId, `🎁 Выдано ${days} дн. для ${userTag(uid)}.\n📅 До: ${until.toLocaleString("ru-RU")}`);
+            await bot.sendMessage(chatId, userCardText(getUser(uid)), userCardButtons(uid));
+            return;
+        }
+        if (data.startsWith("utake_")) {
+            const uid = Number(data.substring(6));
+            await bot.answerCallbackQuery(query.id);
+            await bot.sendMessage(chatId, `⚠️ Точно забрать подписку?\n\n${userTag(uid)}`, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "✅ Да, забрать", callback_data: `utakeok_${uid}` },
+                            { text: "❌ Нет", callback_data: "ucancel" }
+                        ]
+                    ]
+                }
+            });
+            return;
+        }
+        if (data.startsWith("utakeok_")) {
+            const uid = Number(data.substring(8));
+            if (!isSubActive(uid)) {
+                await bot.answerCallbackQuery(query.id, {
+                    text: "У него нет активной подписки",
+                    show_alert: true
+                });
+                await dropButtons();
+                return;
+            }
+            db.prepare("UPDATE users SET sub_until = ? WHERE user_id = ?").run(new Date().toISOString(), uid);
+            console.log(`ADMIN ${userId} забрал подписку у ${uid}`);
+            await bot.answerCallbackQuery(query.id, {
+                text: "Подписка отключена 🚫"
+            });
+            await dropButtons();
+            await bot.sendMessage(chatId, `🚫 Подписка отключена: ${userTag(uid)}.`);
+            await bot.sendMessage(chatId, userCardText(getUser(uid)), userCardButtons(uid));
+            return;
+        }
+        if (data === "ucancel") {
+            await bot.answerCallbackQuery(query.id, {
+                text: "Отменено"
+            });
+            await dropButtons();
+            return;
+        }
         if (data.startsWith("buy_")) {
             const tariffKey = data.substring(4);
             const tariff = TARIFFS[tariffKey];
@@ -1803,6 +2312,7 @@ bot.on("callback_query", async (query) => {
                 });
             }
             catch (_) { }
+            await markOrderHandled(orderId, userId, "confirm");
             await bot.sendMessage(result.userId, "🎉 Оплата подтверждена!\n\n" +
                 "⏳ Ждите, с вами в скором времени " +
                 "свяжутся.\n\n" +
@@ -1842,6 +2352,7 @@ bot.on("callback_query", async (query) => {
                 });
             }
             catch (_) { }
+            await markOrderHandled(orderId, userId, "reject");
             await bot.sendMessage(result.userId, "❌ Ваша оплата не была подтверждена.\n\n" +
                 "Если вы уверены, что оплатили, " +
                 "обратитесь в поддержку:\n\n" +
@@ -1851,7 +2362,7 @@ bot.on("callback_query", async (query) => {
         }
     }
     catch (error) {
-        console.error("CALLBACK ERROR:", error);
+        reportError("CALLBACK ERROR", error);
         try {
             await bot.answerCallbackQuery(query.id, {
                 text: "Произошла ошибка",
@@ -1872,25 +2383,13 @@ async function handleReceipt(msg) {
         await bot.sendMessage(msg.chat.id, "✅ Чек получен!\n\n" +
             `🧾 Заказ: ${order.order_id}\n\n` +
             "Ожидайте проверки администратора.", mainMenu());
-        const username = msg.from.username
-            ? `@${msg.from.username}`
-            : "нет";
-        const tariff = TARIFFS[order.tariff];
-        const adminText = "📩 НОВАЯ ЗАЯВКА\n\n" +
-            `🧾 Заказ: ${order.order_id}\n\n` +
-            `👤 Имя: ${order.name}\n` +
-            `📧 Почта: ${order.email}\n` +
-            `👤 User ID: ${order.user_id}\n` +
-            `👤 Username: ${username}\n\n` +
-            `📦 Тариф: ${tariff.name}\n` +
-            `💰 Сумма: ${order.amount} ₽\n\n` +
-            "💳 Проверьте перевод " +
-            "и выберите действие:";
+        const adminText = orderAdminText(order);
         for (const adminId of ADMIN_IDS) {
             try {
-                await bot.sendMessage(adminId, adminText, {
+                const sent = await bot.sendMessage(adminId, adminText, {
                     ...adminOrderButtons(order.order_id)
                 });
+                db.prepare("INSERT INTO order_msgs (order_id, admin_id, message_id) VALUES (?, ?, ?)").run(order.order_id, adminId, sent.message_id);
                 await bot.forwardMessage(adminId, msg.chat.id, msg.message_id);
                 console.log(`✅ Заявка ${order.order_id} отправлена админу ${adminId}`);
             }
@@ -1900,7 +2399,7 @@ async function handleReceipt(msg) {
         }
     }
     catch (error) {
-        console.error("RECEIPT ERROR:", error);
+        reportError("RECEIPT ERROR", error);
     }
 }
 bot.on("photo", handleReceipt);
@@ -1909,10 +2408,10 @@ bot.on("polling_error", error => {
     console.error("❌ TELEGRAM POLLING ERROR:", error.message);
 });
 process.on("uncaughtException", error => {
-    console.error("❌ UNCAUGHT EXCEPTION:", error);
+    reportError("UNCAUGHT EXCEPTION", error);
 });
 process.on("unhandledRejection", error => {
-    console.error("❌ UNHANDLED REJECTION:", error);
+    reportError("UNHANDLED REJECTION", error);
 });
 console.log("==========================================");
 console.log("🤖 J.A.R.B.I.S БОТ ЗАПУЩЕН");
@@ -1925,3 +2424,8 @@ console.log("🟢 ONLINE ADMINS:", getOnlineAdminsCount());
 console.log("🤖 AI KEY:", AI_API_KEY ? "задан" : "НЕ задан");
 console.log("💳 CARD:", CARD_NUMBER);
 console.log("==========================================");
+setTimeout(() => startupNotice().catch(e => console.error("startupNotice:", e.message)), 3000);
+setTimeout(() => runReminders().catch(e => reportError("REMINDERS", e)), 20000);
+setInterval(() => runReminders().catch(e => reportError("REMINDERS", e)), 3600000);
+setTimeout(() => backupTick().catch(e => reportError("BACKUP", e)), 60000);
+setInterval(() => backupTick().catch(e => reportError("BACKUP", e)), 3600000);
