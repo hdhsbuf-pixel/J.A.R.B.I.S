@@ -113,6 +113,11 @@ function initDb() {
             blocked_id INTEGER NOT NULL,
             PRIMARY KEY (blocker_id, blocked_id)
         );
+        CREATE TABLE IF NOT EXISTS bans (
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            PRIMARY KEY (user_id, kind)
+        );
         CREATE TABLE IF NOT EXISTS order_msgs (
             order_id TEXT NOT NULL,
             admin_id INTEGER NOT NULL,
@@ -132,6 +137,7 @@ function initDb() {
     addColumn("payments", "email", "TEXT");
     addColumn("users", "reminded_3", "TEXT");
     addColumn("users", "reminded_1", "TEXT");
+    db.exec("INSERT OR IGNORE INTO bans (user_id, kind) SELECT blocked_id, 'msg' FROM blocks WHERE blocker_id = 0");
     for (const adminId of ADMIN_IDS) {
         db.prepare(`
             INSERT OR IGNORE INTO admins
@@ -155,6 +161,23 @@ function setMeta(key, value) {
 function userTag(id) {
     const row = getUser(id);
     return `${row && row.username ? "@" + row.username : "без ника"} (${id})`;
+}
+function isBanned(uid, kind) {
+    return !!db.prepare("SELECT 1 FROM bans WHERE user_id = ? AND kind = ?").get(uid, kind);
+}
+function setBan(uid, kind, on) {
+    if (on) {
+        db.prepare("INSERT OR IGNORE INTO bans (user_id, kind) VALUES (?, ?)").run(uid, kind);
+    }
+    else {
+        db.prepare("DELETE FROM bans WHERE user_id = ? AND kind = ?").run(uid, kind);
+    }
+}
+function buyBanText() {
+    return "⛔ Покупка для вас недоступна.\n\n" +
+        "Если это ошибка, обратитесь в поддержку:\n\n" +
+        `Приложение: ${SUPPORT_APP}\n` +
+        `Бот: ${SUPPORT_BOT}`;
 }
 function fmtDate(iso) {
     return new Date(iso).toLocaleDateString("ru-RU");
@@ -258,6 +281,9 @@ async function runReminders() {
     const now = Date.now();
     const rows = db.prepare("SELECT user_id, sub_until, reminded_3, reminded_1 FROM users WHERE sub_until > ? AND sub_until <= ?").all(new Date(now).toISOString(), new Date(now + 72 * 3600000).toISOString());
     for (const r of rows) {
+        if (isBanned(r.user_id, "buy")) {
+            continue;
+        }
         const left = new Date(r.sub_until).getTime() - now;
         const oneDay = left <= 86400000;
         if (oneDay ? r.reminded_1 === r.sub_until : r.reminded_3 === r.sub_until) {
@@ -314,7 +340,9 @@ function userCardText(row) {
         `📛 Имя: ${row.name || "не указано"}\n` +
         `📧 Почта: ${row.email || "не указана"}\n\n` +
         `📅 Подписка: ${sub}\n` +
-        `💰 Оплачено всего: ${row.total_paid || 0} ₽\n\n` +
+        `💰 Оплачено всего: ${row.total_paid || 0} ₽\n` +
+        `🛒 Бан покупок: ${isBanned(row.user_id, "buy") ? "🚫 да" : "нет"}\n` +
+        `✉️ Бан сообщений: ${isBanned(row.user_id, "msg") ? "🚫 да" : "нет"}\n\n` +
         "📦 Заказы:\n" +
         (orders.length
             ? orders.map(o => `№${o.order_id} — ${TARIFFS[o.tariff] ? TARIFFS[o.tariff].name : o.tariff}, ${o.amount} ₽, ${statusText[o.status] || o.status}, ${fmtDate(o.created_at)}`).join("\n")
@@ -334,6 +362,18 @@ function userCardButtons(uid) {
                     {
                         text: "🚫 Забрать подписку",
                         callback_data: `utake_${uid}`
+                    }
+                ],
+                [
+                    {
+                        text: isBanned(uid, "buy") ? "🔓 Снять бан покупок" : "🛒 Бан покупок",
+                        callback_data: `ubuy_${uid}`
+                    }
+                ],
+                [
+                    {
+                        text: isBanned(uid, "msg") ? "🔓 Снять бан сообщений" : "✉️ Бан сообщений",
+                        callback_data: `umsg_${uid}`
                     }
                 ]
             ]
@@ -1522,9 +1562,12 @@ bot.on("message", async (msg) => {
             await sendBackup([userId], "по запросу");
             return;
         }
-        const unban = isAdmin(userId) && text.match(/^разбан\s+(\d{5,}|@\w{3,})$/i);
-        if (unban) {
-            const ref = unban[1];
+        const banCmd = isAdmin(userId) && text.match(/^(бан|разбан)(?:\s+(покупок|покупки|сообщений|сообщения))?\s+(@\w{3,}|\d{5,})$/i);
+        if (banCmd) {
+            const on = banCmd[1].toLowerCase() === "бан";
+            const what = (banCmd[2] || "").toLowerCase();
+            const kinds = what.startsWith("покуп") ? ["buy"] : what.startsWith("сообщ") ? ["msg"] : ["buy", "msg"];
+            const ref = banCmd[3];
             const row = /^\d+$/.test(ref)
                 ? { user_id: Number(ref) }
                 : db.prepare("SELECT user_id FROM users WHERE LOWER(username) = LOWER(?)").get(ref.slice(1));
@@ -1532,8 +1575,25 @@ bot.on("message", async (msg) => {
                 await bot.sendMessage(msg.chat.id, "❌ Пользователь не найден в базе.");
                 return;
             }
-            db.prepare("DELETE FROM blocks WHERE blocker_id = 0 AND blocked_id = ?").run(row.user_id);
-            await bot.sendMessage(msg.chat.id, `🔊 Запрет снят: ${userTag(row.user_id)}.`);
+            if (on && isAdmin(row.user_id)) {
+                await bot.sendMessage(msg.chat.id, "❌ Админа забанить нельзя.");
+                return;
+            }
+            for (const k of kinds) {
+                setBan(row.user_id, k, on);
+            }
+            const label = kinds.length === 2 ? "покупки и сообщения" : kinds[0] === "buy" ? "покупки" : "сообщения";
+            await bot.sendMessage(msg.chat.id, on
+                ? `🚫 Бан (${label}): ${userTag(row.user_id)}.\n\nСнять: «разбан ${row.user_id}»`
+                : `🔓 Бан снят (${label}): ${userTag(row.user_id)}.`);
+            return;
+        }
+        if (isAdmin(userId) && (text.toLowerCase() === "/баны" || text.toLowerCase() === "/bans")) {
+            const buyList = db.prepare("SELECT user_id FROM bans WHERE kind = 'buy'").all();
+            const msgList = db.prepare("SELECT user_id FROM bans WHERE kind = 'msg'").all();
+            await bot.sendMessage(msg.chat.id, "🚫 Баны\n\n" +
+                `🛒 Покупки (${buyList.length}):\n` + (buyList.length ? buyList.map(r => userTag(r.user_id)).join("\n") : "никого") + "\n\n" +
+                `✉️ Сообщения (${msgList.length}):\n` + (msgList.length ? msgList.map(r => userTag(r.user_id)).join("\n") : "никого"));
             return;
         }
         const idLookup = text.match(/^\/id\s+@(\w{3,})$/i);
@@ -1616,6 +1676,10 @@ bot.on("message", async (msg) => {
             return;
         }
         if (text === "🛒 Купить") {
+            if (isBanned(userId, "buy")) {
+                await bot.sendMessage(msg.chat.id, buyBanText(), mainMenu());
+                return;
+            }
             await bot.sendMessage(msg.chat.id, "🛒 Выберите тариф:\n\n" +
                 "💡 После выбора тарифа вам нужно будет " +
                 "указать имя и почту.", buyMenu());
@@ -1675,6 +1739,10 @@ bot.on("message", async (msg) => {
         }
         const direct = text.match(/^(?:отправь|отправить|напиши|написать)(?:\s+сообщение)?\s+(@\w{3,}|\d{5,})\s*([\s\S]*)$/i);
         if (direct) {
+            if (!isAdmin(userId) && isBanned(userId, "msg")) {
+                await bot.sendMessage(msg.chat.id, "⛔ Вам запрещено отправлять сообщения через бота.");
+                return;
+            }
             const ref = direct[1];
             const byId = /^\d+$/.test(ref);
             const targetName = byId ? null : ref.slice(1);
@@ -1709,7 +1777,7 @@ bot.on("message", async (msg) => {
                 return;
             }
             if (!isAdmin(userId)) {
-                const isBlocked = db.prepare("SELECT 1 FROM blocks WHERE blocked_id = ? AND (blocker_id = ? OR blocker_id = 0)").get(userId, target.user_id);
+                const isBlocked = db.prepare("SELECT 1 FROM blocks WHERE blocked_id = ? AND blocker_id = ?").get(userId, target.user_id);
                 if (isBlocked) {
                     await bot.sendMessage(msg.chat.id, "❌ Этот пользователь не принимает ваши сообщения.");
                     return;
@@ -1859,6 +1927,11 @@ bot.on("message", async (msg) => {
             if (!validEmail(email)) {
                 await bot.sendMessage(msg.chat.id, "❌ Неверный формат почты.\n\n" +
                     "Введите email ещё раз:");
+                return;
+            }
+            if (isBanned(userId, "buy")) {
+                userStates.delete(userId);
+                await bot.sendMessage(msg.chat.id, buyBanText(), mainMenu());
                 return;
             }
             const tariff = TARIFFS[state.tariffKey];
@@ -2032,7 +2105,7 @@ bot.on("callback_query", async (query) => {
                 "⚠️ Максимум — 15 дней.");
             return;
         }
-        if (/^(ugive_|ugd_|utake_|utakeok_|ucard_|ucancel|gban_)/.test(data) && !isAdmin(userId)) {
+        if (/^(ugive_|ugd_|utake_|utakeok_|ucard_|ucancel|gban_|ubuy_|umsg_)/.test(data) && !isAdmin(userId)) {
             await bot.answerCallbackQuery(query.id, {
                 text: "Нет доступа",
                 show_alert: true
@@ -2051,6 +2124,13 @@ bot.on("callback_query", async (query) => {
             catch (_) { }
         };
         if (data === "renew") {
+            if (isBanned(userId, "buy")) {
+                await bot.answerCallbackQuery(query.id, {
+                    text: "Покупка для вас недоступна",
+                    show_alert: true
+                });
+                return;
+            }
             await bot.answerCallbackQuery(query.id);
             await bot.sendMessage(chatId, "🛒 Выберите тариф для продления:", buyMenu());
             return;
@@ -2121,12 +2201,35 @@ bot.on("callback_query", async (query) => {
         }
         if (data.startsWith("gban_")) {
             const senderId = Number(data.substring(5));
-            db.prepare("INSERT OR IGNORE INTO blocks (blocker_id, blocked_id) VALUES (0, ?)").run(senderId);
+            setBan(senderId, "msg", true);
             await bot.answerCallbackQuery(query.id, {
                 text: "Запрещено 🔇"
             });
             await dropButtons();
-            await bot.sendMessage(chatId, `🔇 ${userTag(senderId)} больше не может писать через бота.\n\nСнять запрет: «разбан ${senderId}»`);
+            await bot.sendMessage(chatId, `🔇 ${userTag(senderId)} больше не может писать через бота.\n\nСнять запрет: «разбан сообщений ${senderId}»`);
+            return;
+        }
+        if (data.startsWith("ubuy_") || data.startsWith("umsg_")) {
+            const kind = data.startsWith("ubuy_") ? "buy" : "msg";
+            const uid = Number(data.substring(5));
+            if (!Number.isInteger(uid) || uid <= 0 || isAdmin(uid)) {
+                await bot.answerCallbackQuery(query.id, {
+                    text: "Нельзя",
+                    show_alert: true
+                });
+                return;
+            }
+            const turnOn = !isBanned(uid, kind);
+            setBan(uid, kind, turnOn);
+            console.log(`ADMIN ${userId}: бан ${kind} для ${uid} -> ${turnOn}`);
+            await bot.answerCallbackQuery(query.id, {
+                text: turnOn ? "Бан включён 🚫" : "Бан снят 🔓"
+            });
+            await dropButtons();
+            const row = getUser(uid);
+            if (row) {
+                await bot.sendMessage(chatId, userCardText(row), userCardButtons(uid));
+            }
             return;
         }
         if (data.startsWith("ucard_")) {
@@ -2233,6 +2336,13 @@ bot.on("callback_query", async (query) => {
             return;
         }
         if (data.startsWith("buy_")) {
+            if (isBanned(userId, "buy")) {
+                await bot.answerCallbackQuery(query.id, {
+                    text: "Покупка для вас недоступна",
+                    show_alert: true
+                });
+                return;
+            }
             const tariffKey = data.substring(4);
             const tariff = TARIFFS[tariffKey];
             if (!tariff) {
@@ -2254,6 +2364,13 @@ bot.on("callback_query", async (query) => {
             return;
         }
         if (data.startsWith("paid_")) {
+            if (isBanned(userId, "buy")) {
+                await bot.answerCallbackQuery(query.id, {
+                    text: "Покупка для вас недоступна",
+                    show_alert: true
+                });
+                return;
+            }
             const orderId = data.substring(5);
             const order = getOrder(orderId);
             if (!order) {
@@ -2374,6 +2491,10 @@ bot.on("callback_query", async (query) => {
 });
 async function handleReceipt(msg) {
     try {
+        if (isBanned(msg.from.id, "buy")) {
+            await bot.sendMessage(msg.chat.id, buyBanText(), mainMenu());
+            return;
+        }
         const order = getPendingOrder(msg.from.id);
         if (!order) {
             await bot.sendMessage(msg.chat.id, "❌ У вас нет ожидающего заказа.\n\n" +
